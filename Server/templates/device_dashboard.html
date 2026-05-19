@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ device_name }} - Apparaat</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body class="theme-light">
+  <header class="top-bar">
+    <div class="brand">Don Bosco Haacht</div>
+    <div class="top-center">
+      <div class="device-title">
+        <span class="device-name">{{ device_name }}</span>
+        <span class="device-ip">- {{ device_ip }}</span>
+      </div>
+      <span class="device-subtitle">Apparaat dashboard</span>
+    </div>
+    <div class="top-actions">
+      <button class="ghost" id="settingsToggle" type="button">Instellingen</button>
+      <div class="settings-menu" id="settingsMenu" aria-hidden="true">
+        <button class="settings-item" id="themeToggle" type="button">
+          <span class="theme-icon" id="themeIcon">☀️</span>
+          <span>Thema</span>
+        </button>
+        <a class="settings-item logout" href="{{ url_for('logout') }}">Uitloggen</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout-wrapper device-wrapper" data-device-id="{{ device_id }}" data-device-ip="{{ device_ip }}">
+    <aside class="sidebar">
+      <div class="menu-title">Menu</div>
+      <button class="menu-item" type="button" onclick="location.href='{{ url_for('index') }}?panel=dashboard'">Dashboard</button>
+      <button class="menu-item" type="button" onclick="location.href='{{ url_for('index') }}?panel=devices'">Apparaten</button>
+      <button class="menu-item" type="button" onclick="location.href='{{ url_for('index') }}?panel=admin'">Ops</button>
+    </aside>
+    <section class="content-area">
+      <section class="panel panel-dashboard active" data-panel="device">
+        <section class="grid" id="deviceGrid">
+          <button class="add-module-tile" id="addModule" type="button">+ Module</button>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <template id="deviceModuleTemplate">
+    <div class="module" draggable="true">
+      <div class="module-header">
+        <span class="module-title"></span>
+        <div class="module-actions">
+          <button class="module-lock" title="Lock">🔒︎</button>
+          <button class="module-remove">×</button>
+        </div>
+      </div>
+      <div class="module-body"></div>
+      <div class="resize-handle resize-right" title="Resize"></div>
+      <div class="resize-handle resize-bottom" title="Resize"></div>
+      <div class="resize-handle resize-left" title="Resize"></div>
+      <div class="resize-handle resize-top" title="Resize"></div>
+    </div>
+  </template>
+
+  <div class="modal" id="moduleModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Modules</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <div class="modal-list">
+        <button class="module-item" type="button" data-module="info">Info</button>
+        <button class="module-item" type="button" data-module="stats">Stats</button>
+        <button class="module-item" type="button" data-module="arp">ARP Tabel</button>
+        <button class="module-item" type="button" data-module="ping">Ping</button>
+        <button class="module-item" type="button" data-module="terminal">Terminal</button>
+      </div>
+      <p class="hint">Klik om toe te voegen.</p>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='modules/ping-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/terminal-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/info-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/arp-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules_shared.js') }}"></script>
+  <script src="{{ url_for('static', filename='device_dashboard.js') }}"></script>
+</body>
+</html>

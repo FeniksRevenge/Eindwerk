@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body class="theme-light">
+  <main class="auth-shell">
+    <section class="auth-visual">
+      <img class="brand-logo" src="{{ url_for('static', filename='don-bosco-logo.png') }}" alt="Don Bosco Haacht" width="200" height="200" />
+      <div class="brand-text">
+        <h1>Don Bosco Haacht</h1>
+        
+      </div>
+    </section>
+    <section class="auth-panel">
+      <h2>Aanmelden</h2>
+     
+      {% if error %}
+      <div class="error">{{ error }}</div>
+      {% endif %}
+      <form method="post" class="form">
+        <label>
+          Gebruikersnaam
+          <input type="text" name="username" placeholder="Gebruikersnaam" required />
+        </label>
+        <label>
+          Wachtwoord
+          <input type="password" name="password" placeholder="Wachtwoord" required />
+        </label>
+        <button class="button primary" type="submit">Login</button>
+        <button class="link" type="button" onclick="window.location.href='{{ url_for('wachtwoord_vergeten_pagina') }}'">Wachtwoord vergeten?</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

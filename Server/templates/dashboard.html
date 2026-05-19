@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Don Bosco Haacht</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body class="theme-light">
+  <header class="top-bar">
+    <div class="brand">
+      <img class="brand-logo" src="{{ url_for('static', filename='don-bosco-logo.png') }}" alt="Don Bosco" />
+      <span>Don Bosco Haacht</span>
+    </div>
+    <div class="top-actions">
+      <button class="ghost" id="settingsToggle" type="button">
+        Instellingen
+        <span id="settingsAlertDot" class="settings-alert-dot" hidden></span>
+      </button>
+      <div class="settings-menu" id="settingsMenu" aria-hidden="true">
+        <button class="settings-item" id="themeToggle" type="button">
+          <span class="theme-icon" id="themeIcon">☀️</span>
+          <span>Thema</span>
+        </button>
+        <button class="settings-item" id="profileButton" type="button">
+          <span>👤 Profiel</span>
+        </button>
+        <button class="settings-item" id="resetRequestsButton" type="button" hidden>
+          <span>Wachtwoord aanvragen</span>
+          <span id="resetRequestsBadge">0</span>
+        </button>
+        <a class="settings-item logout" href="{{ url_for('logout') }}">Uitloggen</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout-wrapper">
+    <aside class="sidebar">
+      <div class="menu-title">Menu</div>
+      <button class="menu-item" type="button" data-section="dashboard">Dashboard</button>
+      <button class="menu-item" type="button" data-section="devices">Apparaten</button>
+      <button class="menu-item admin-only" type="button" data-section="accounts" hidden>Accounts</button>
+      <button class="menu-item admin-only" type="button" data-section="admin" hidden>Ops</button>
+    </aside>
+    <section class="content-area">
+      <section class="panel panel-dashboard" data-panel="dashboard">
+        <section class="grid" id="grid">
+          <button class="add-module-tile" id="addModule" type="button">+ Module</button>
+        </section>
+      </section>
+      <section class="panel panel-devices" data-panel="devices" hidden>
+        <h2>Apparaten</h2>
+        <form class="device-form" id="deviceForm">
+          <input class="device-input" type="text" name="name" placeholder="Naam (optioneel, bv PLC)" />
+          <button class="button primary" type="submit">Toevoegen</button>
+        </form>
+        <div class="device-list" id="deviceDiscoverList"></div>
+        <div class="device-list" id="deviceList"></div>
+
+        <section id="deviceDiscoverModal" class="modal">
+          <div class="modal-backdrop"></div>
+          <div class="modal-content device-discover-modal-content">
+            <div class="modal-header">
+              <h3 style="margin:0;">Gevonden apparaten</h3>
+              <button class="button ghost" type="button" id="deviceDiscoverClose">Sluiten</button>
+            </div>
+            <div class="device-discover-actions">
+              <button class="button ghost" type="button" id="deviceDiscoverRefresh">Scannen</button>
+              <button class="button ghost" type="button" id="deviceDiscoverScanPlcOnly">Scan enkel PLC's</button>
+              <button class="button ghost" type="button" id="deviceDiscoverFilterPlc">Alleen PLC-kandidaten</button>
+              <button class="button primary" type="button" id="deviceDiscoverAddAllPlc">Voeg alle PLC-kandidaten toe</button>
+            </div>
+            <div class="device-sub device-discover-status" id="deviceDiscoverStatus"></div>
+            <div class="device-list device-discover-candidates" id="deviceDiscoverCandidates"></div>
+          </div>
+        </section>
+
+        <section id="plcModuleModal" class="modal">
+          <div class="modal-backdrop"></div>
+          <div class="modal-content device-discover-modal-content">
+            <div class="modal-header">
+              <h3 style="margin:0;" id="plcModuleModalTitle">PLC module</h3>
+              <button class="button ghost" type="button" id="plcModuleModalClose">Sluiten</button>
+            </div>
+            <div id="plcModuleModalBody"></div>
+          </div>
+        </section>
+      </section>
+      <section class="panel panel-admin" data-panel="admin" hidden>
+        <h2>Ops beheer</h2>
+        <div class="admin-grid">
+          <label class="admin-field">
+            Gebruiker
+            <select id="adminUserSelect"></select>
+          </label>
+          <div class="admin-section">
+            <h3>Toegang</h3>
+            <label class="admin-toggle">
+              <input type="checkbox" id="adminCanViewDevices" /> Apparaten bekijken
+            </label>
+            <label class="admin-toggle">
+              <input type="checkbox" id="adminCanManageDevices" /> Apparaten beheren
+            </label>
+          </div>
+          <div class="admin-section">
+            <h3>Modules</h3>
+            <div class="admin-list" id="adminModules"></div>
+          </div>
+          <div class="admin-section">
+            <h3>Apparaten</h3>
+            <div class="admin-list" id="adminDevices"></div>
+          </div>
+          <div class="admin-section activity">
+            <h3>Ingelogde apparaten</h3>
+            <div class="admin-list" id="adminActivity"></div>
+          </div>
+          <div class="admin-actions">
+            <button class="button primary" id="adminSave" type="button">Opslaan</button>
+            <button class="button ghost" id="adminDeleteUser" type="button">Verwijder gebruiker</button>
+            <span class="admin-status" id="adminStatus"></span>
+          </div>
+        </div>
+      </section>
+      <section class="panel panel-accounts accounts-new" data-panel="accounts" hidden>
+        <div class="accounts-new-header">
+          <div>
+            <h2>Accounts</h2>
+            <div class="accounts-new-subtitle">Beheer groepen en gebruikers in één overzicht.</div>
+          </div>
+        </div>
+        <div class="accounts-new-shell">
+          <aside class="accounts-new-groups">
+            <div class="accounts-new-panel-header">
+              <div class="accounts-new-title">Groepen</div>
+              <button class="icon-button small" id="accountsGroupCreateToggle" type="button" aria-label="Groep toevoegen">＋</button>
+            </div>
+            <input class="accounts-input" id="accountsGroupSearch" type="search" placeholder="Zoek groep" />
+            <div class="accounts-list tall" id="accountsGroupList"></div>
+          </aside>
+          <section class="accounts-new-users">
+            <div class="accounts-new-panel-header">
+              <div>
+                <div class="accounts-new-title">Gebruikers</div>
+                <div class="accounts-selected" id="accountsSelectedLabel">Geselecteerde groep: Alle groepen</div>
+              </div>
+              <div class="accounts-new-actions">
+                <button class="icon-button small" id="accountsUserCreateToggle" type="button" aria-label="Gebruiker toevoegen">＋</button>
+                <input class="accounts-input" id="accountsUserSearch" type="search" placeholder="Zoek gebruiker" />
+              </div>
+            </div>
+            <div class="accounts-list" id="accountsUserList"></div>
+          </section>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div class="modal" id="userEditModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Gebruiker bewerken</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <div class="accounts-panel">
+        <div class="user-edit-name" id="userEditName"></div>
+        <div class="accounts-form">
+          <select class="accounts-input" id="userEditCategory">
+            <option value="student">Student</option>
+            <option value="student_plus">Student+</option>
+            <option value="teacher">Leerkracht</option>
+            <option value="teacher_plus">Leerkracht+</option>
+          </select>
+          <select class="accounts-input" id="userEditRole">
+            <option value="user">User</option>
+            <option value="iter">ITer</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="group-checkboxes" id="userEditGroups"></div>
+        <div class="admin-actions">
+          <button class="button primary" id="userEditSave" type="button">Opslaan</button>
+          <span class="admin-status" id="userEditStatus"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="accountsGroupModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Nieuwe groep</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <form class="accounts-form" id="accountsGroupForm">
+        <input class="accounts-input" type="text" name="name" placeholder="Groepsnaam" required />
+        <select class="accounts-input" id="accountsGroupParentSelect" name="parent_id"></select>
+        <button class="button primary" type="submit">Aanmaken</button>
+      </form>
+      <div class="admin-status" id="accountsGroupStatus"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="accountsUserModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Nieuwe gebruiker</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <form class="accounts-form" id="accountsUserForm">
+        <input class="accounts-input" type="text" name="username" placeholder="Gebruikersnaam" required />
+        <input class="accounts-input" type="password" name="password" placeholder="Wachtwoord" required />
+        <select class="accounts-input" name="category">
+          <option value="student">Student</option>
+          <option value="student_plus">Student+</option>
+          <option value="teacher">Leerkracht</option>
+          <option value="teacher_plus">Leerkracht+</option>
+        </select>
+        <select class="accounts-input" name="role">
+          <option value="user">User</option>
+          <option value="iter">ITer</option>
+          <option value="admin">Admin</option>
+        </select>
+        <select class="accounts-input" id="accountsUserGroupSelect" name="group_id"></select>
+        <button class="button primary" type="submit">Aanmaken</button>
+      </form>
+      <div class="admin-status" id="accountsUserStatus"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="moduleModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Modules</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <div class="modal-list">
+        <button class="module-item" type="button" data-module="info">Info</button>
+        <button class="module-item" type="button" data-module="stats">Stats</button>
+        <button class="module-item" type="button" data-module="arp">ARP Tabel</button>
+        <button class="module-item" type="button" data-module="ping">Ping</button>
+        <button class="module-item" type="button" data-module="terminal">Terminal</button>
+        <button class="module-item" type="button" data-module="plc">PLC I/O</button>
+      </div>
+      <p class="hint">Klik om toe te voegen.</p>
+    </div>
+  </div>
+
+  <div class="modal" id="statsSettingsModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Stats instellingen</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <div class="stats-settings">
+        <p class="hint">Kies max 4 apparaten om te tonen.</p>
+        <div class="stats-settings-meta" id="statsSettingsCount"></div>
+        <div class="stats-settings-list" id="statsSettingsList"></div>
+        <div class="stats-settings-actions">
+          <button class="button primary" id="statsSettingsSave" type="button">Opslaan</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="resetRequestsModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Wachtwoord aanvragen</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <div class="admin-list" id="resetRequestsList">Laden...</div>
+      <div class="admin-status" id="resetRequestsStatus"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="profileModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-content profile-modal-content">
+      <div class="modal-header">
+        <h2>Mijn profiel</h2>
+        <button class="modal-close" data-close="true">×</button>
+      </div>
+      <div class="accounts-panel profile-panel">
+        <div class="profile-info-grid">
+          <div class="profile-field">
+            <label>Gebruikersnaam</label>
+            <div id="profileUsername" class="profile-value"></div>
+          </div>
+          <div class="profile-field">
+            <label>Rol</label>
+            <div id="profileRole" class="profile-value"></div>
+          </div>
+          <div class="profile-field">
+            <label>Categorie</label>
+            <div id="profileCategory" class="profile-value"></div>
+          </div>
+          <div class="profile-field">
+            <label>Lid sinds</label>
+            <div id="profileCreatedAt" class="profile-value"></div>
+          </div>
+        </div>
+        <div class="profile-password-section">
+          <h3>Wachtwoord wijzigen</h3>
+          <div class="profile-password-grid">
+            <label>
+              Huidig wachtwoord
+              <input type="password" id="profileOldPassword" placeholder="Huidig wachtwoord" class="accounts-input" required />
+            </label>
+            <label>
+              Nieuw wachtwoord
+              <input type="password" id="profileNewPassword" placeholder="Nieuw wachtwoord" class="accounts-input" required />
+            </label>
+            <label class="profile-password-grid-full">
+              Nieuw wachtwoord (herhaling)
+              <input type="password" id="profileNewPasswordRepeat" placeholder="Nieuw wachtwoord herhalen" class="accounts-input" required />
+            </label>
+          </div>
+          <button class="button primary" id="profileChangePasswordButton" type="button">Wachtwoord wijzigen</button>
+        </div>
+        <div class="admin-status" id="profileStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <template id="moduleTemplate">
+    <div class="module" draggable="true">
+      <div class="module-header">
+        <span class="module-title"></span>
+        <div class="module-actions">
+          <button class="module-lock" title="Lock">🔒︎</button>
+          <button class="module-remove">×</button>
+        </div>
+      </div>
+      <div class="module-body"></div>
+      <div class="resize-handle resize-right" title="Resize"></div>
+      <div class="resize-handle resize-bottom" title="Resize"></div>
+      <div class="resize-handle resize-left" title="Resize"></div>
+      <div class="resize-handle resize-top" title="Resize"></div>
+    </div>
+  </template>
+
+  <script src="{{ url_for('static', filename='modules/ping-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/terminal-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/info-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/arp-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules/plc-module.js') }}"></script>
+  <script src="{{ url_for('static', filename='modules_shared.js') }}"></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

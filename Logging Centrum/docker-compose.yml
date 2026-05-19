@@ -1,0 +1,13 @@
+services:
+  logging-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: logging-center
+    ports:
+      - "5001:5001"
+    environment:
+      - LOG_DB_PATH=/Database/logs.xlsx
+    volumes:
+      - ../Database:/Database
+    restart: unless-stopped
