@@ -1,3 +1,4 @@
+|-|2025-2026 |-|
 Dit is het eindwerk van 607IICT1 gemaakt door Sander Maes.
 
 - Startup folder: In de startup folder bevindt zich een python file genaamd Startup.py, de bedoeling hiervoor is om gemakkelijk de server en de API te kunnen opstarten. Requirements.txt bevindt zich hier ook in.
