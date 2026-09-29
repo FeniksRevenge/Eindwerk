@@ -151,6 +151,20 @@ class App:
         self.auto_var = tk.DoubleVar(value=cfg.get("auto_shot_every", 10))
         ttk.Spinbox(grid, from_=1, to=120, increment=5, textvariable=self.auto_var, width=6,
                     command=self.save_settings).grid(row=3, column=1, sticky="e", pady=(6, 0))
+        # Danger size: how much bigger than it looks the bot should treat each kind of thing.
+        tk.Label(grid, text="Danger size of", bg=BG, fg=FG, font=FONT).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        dz = tk.Frame(grid, bg=BG)
+        dz.grid(row=4, column=1, columnspan=2, sticky="e", pady=(6, 0))
+        self.expand_kinds = [c for c in CLASSES if c not in ("player", "health")]
+        self.expand_kind = tk.StringVar(value="boss")
+        kind_box = ttk.Combobox(dz, textvariable=self.expand_kind, values=self.expand_kinds, state="readonly", width=13)
+        kind_box.pack(side="left")
+        self.expand_var = tk.DoubleVar(value=(cfg.get("expand") or {}).get("boss", 1.0))
+        ttk.Spinbox(dz, from_=1.0, to=4.0, increment=0.25, textvariable=self.expand_var, width=5,
+                    command=self.save_expand).pack(side="left", padx=(6, 0))
+        tk.Label(dz, text="x", bg=BG, fg=MUTED, font=FONT).pack(side="left")
+        kind_box.bind("<<ComboboxSelected>>", lambda _e: self.expand_var.set(
+            ((read_config() or {}).get("expand") or {}).get(self.expand_kind.get(), 1.0)))
         tk.Label(grid, text="Shoot with", bg=BG, fg=FG, font=FONT).grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.fire_var = tk.StringVar(value="Space" if cfg.get("fire_with", "space") == "space" else "Left mouse")
         fire_box = ttk.Combobox(grid, textvariable=self.fire_var, values=["Space", "Left mouse"], state="readonly", width=12)
@@ -340,6 +354,20 @@ class App:
     def save_settings(self):
         with CONFIG_LOCK:
             self._save_settings()
+
+    def save_expand(self):
+        try:
+            factor = min(4.0, max(1.0, float(self.expand_var.get())))
+        except (tk.TclError, ValueError):
+            return
+        kind = self.expand_kind.get()
+        with CONFIG_LOCK:
+            cfg = read_config()
+            if not cfg:
+                return
+            cfg.setdefault("expand", {})[kind] = factor
+            write_config(cfg)
+        self.write_log(f"{kind} is now treated as {factor:g}x its size (restart the bot with * to use it).")
 
     def _save_settings(self):
         cfg = read_config()

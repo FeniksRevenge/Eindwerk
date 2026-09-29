@@ -109,6 +109,8 @@ class Detector:
         self.tol = cfg.get("tolerance", DEFAULT_TOLERANCE)
         self.tol_arr = np.array(self.tol)
         self.ignore = cfg.get("ignore", [])  # things marked "not a thing" in the photo trainer
+        # "Danger size": treat some kinds as bigger than they look so the bot keeps more distance.
+        self.expand = {k: float(v) for k, v in cfg.get("expand", {}).items()}
         # Group classes whose colors are practically the same (calibration clicks on the same red
         # rarely give identical numbers), so one red blob is never reported as two things.
         self.groups = []  # [([lab, ...], [(name, radius), ...])]
@@ -184,7 +186,8 @@ class Detector:
         """Returns {class name: [(x, y, radius), ...]} in full-size pixel coordinates."""
         out = {name: [] for name in CLASSES}
         for d in self.detect_detailed(bgr):
-            out[d["name"]].append((d["x"], d["y"], d["r"]))
+            r = d["r"] if d["cls"] in ("player", "health") else d["r"] * self.expand.get(d["cls"], 1.0)
+            out[d["name"]].append((d["x"], d["y"], r))
         return out
 
 

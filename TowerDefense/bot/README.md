@@ -111,6 +111,7 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 | `death_timeout` | Seconds the player must be missing before it counts as dead and stops (at least 3). |
 | `require_focus` | `true` = only send input while Roblox is the active window. |
 | `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
+| `expand` | Danger size per kind, e.g. `{"boss": 1.5}`: the bot treats it as 1.5x bigger and keeps more distance. Set it in the app under **Danger size of**. |
 
 ## How it works
 - `vision.py` finds things by color, tells same-colored things apart by size (red square = mob,
