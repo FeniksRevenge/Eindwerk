@@ -22,7 +22,7 @@ import mss
 import numpy as np
 
 from runner import BotRunner
-from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, Detector, annotate, measure_blob
+from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, measure_blob
 
 # When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
 FROZEN = getattr(sys, "frozen", False)
@@ -65,7 +65,7 @@ INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
 KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE = 0x0002, 0x0008
 MOUSEEVENTF_MOVE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x0001, 0x0002, 0x0004
 MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_ABSOLUTE = 0x4000, 0x8000
-SCANCODES = {"w": 0x11, "a": 0x1E, "s": 0x1F, "d": 0x20}
+SCANCODES = {"w": 0x11, "a": 0x1E, "s": 0x1F, "d": 0x20, "space": 0x39}
 
 
 def _send(inp):
@@ -102,9 +102,10 @@ def roblox_in_front():
 
 
 class WindowsIO:
-    def __init__(self, region, require_focus=True):
+    def __init__(self, region, require_focus=True, fire_with="space"):
         self.region = region  # {"left", "top", "width", "height"} in screen pixels
         self.require_focus = require_focus
+        self.fire_with = fire_with  # "space" or "mouse" (left click)
         self.sct = mss.mss()
         self.keys = set()
         self.down = False
@@ -124,8 +125,12 @@ class WindowsIO:
         mouse_move(self.region["left"] + x, self.region["top"] + y)
 
     def mouse(self, down):
+        """Hold or release the fire button (Space by default, or left mouse)."""
         if down != self.down:
-            mouse_button(down)
+            if self.fire_with == "mouse":
+                mouse_button(down)
+            else:
+                key("space", down)
             self.down = down
 
     def focused(self):
@@ -175,51 +180,52 @@ def banner(img, text):
     return out
 
 
-def calibrate(only):
-    cfg = {}
+def read_config_or_empty():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
-    names = only or CLASSES
-    for n in names:
-        if n not in CLASSES:
-            sys.exit(f"Unknown thing '{n}'. Choose from: {', '.join(CLASSES)}")
+            return json.load(f)
+    return {}
 
+
+def save_config(cfg):
+    cfg.setdefault("downscale", 2)
+    cfg.setdefault("tolerance", DEFAULT_TOLERANCE)
+    cfg.setdefault("death_timeout", 1.5)
+    cfg.setdefault("require_focus", True)
+    cfg.setdefault("fire_with", "space")
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def apply_preset():
+    """Use the colors measured from real screenshots, scaled to this play area's size."""
+    cfg = read_config_or_empty()
+    scale = cfg["region"]["height"] / PRESET["ref_height"] if "region" in cfg else 1.0
+    cfg["colors"] = {n: {"lab": c["lab"], "radius": round(c["radius"] * scale, 1)} for n, c in PRESET["colors"].items()}
+    cfg["preset"] = True
+    save_config(cfg)
+    return "region" in cfg
+
+
+def calibrate_from_image(path, only):
+    """Calibrate colors from a saved screenshot of the play area (e.g. one taken with /)."""
+    shot = cv2.imread(path)
+    if shot is None:
+        sys.exit(f"Can't open {path}")
+    cfg = read_config_or_empty()
+    click_through(cfg, shot, only or CLASSES)
+    cfg["preset"] = False
+    save_config(cfg)
+
+
+def click_through(cfg, crop, names):
+    """Shows the play area and asks you to click each thing; stores colors in cfg."""
     win = "Swarm bot calibration"
-    intro = np.zeros((230, 760, 3), np.uint8)
-    lines = [("CALIBRATION", (120, 255, 140), 0.9),
-             ("1. Start the game in Roblox with as many kinds of mobs on screen as you can", (230, 230, 230), 0.5),
-             ("   (press P in the game to pause once they're there).", (230, 230, 230), 0.5),
-             ("2. Come back to this window and press ENTER.", (230, 230, 230), 0.5),
-             ("3. Switch to Roblox: a screenshot is taken 5 seconds later.", (230, 230, 230), 0.5),
-             ("Esc = cancel", (150, 150, 150), 0.5)]
-    for i, (text, color, size) in enumerate(lines):
-        cv2.putText(intro, text, (20, 40 + i * 34), cv2.FONT_HERSHEY_SIMPLEX, size, color, 1, cv2.LINE_AA)
-    show_on_top(win, intro)
-    k = -1
-    while k not in (13, 27):
-        k = cv2.waitKey(30) & 0xFF
-    cv2.destroyAllWindows()
-    if k == 27:
-        sys.exit("Cancelled, nothing saved.")
-    shot, off_x, off_y = grab_screen()
-    show_on_top(win, banner(np.zeros((40, 760, 3), np.uint8), "Got it."))
-
-    if not only or "region" not in cfg:
-        disp, s = fit_to_screen(shot)
-        print("\nDrag a box around the whole play area, then press Enter (C = cancel).")
-        x, y, w, h = cv2.selectROI(win, banner(disp, "Drag a box around the PLAY AREA, then press ENTER"), False, False)
-        if w == 0 or h == 0:
-            sys.exit("No play area selected, nothing saved.")
-        cfg["region"] = {"left": int(x / s) + off_x, "top": int(y / s) + off_y, "width": int(w / s), "height": int(h / s)}
-
-    r = cfg["region"]
-    crop = shot[r["top"] - off_y:r["top"] - off_y + r["height"], r["left"] - off_x:r["left"] - off_x + r["width"]]
     disp, s = fit_to_screen(crop)
     cfg.setdefault("colors", {})
     clicked = []
+    show_on_top(win, disp)
     cv2.setMouseCallback(win, lambda ev, x, y, *_: clicked.append((x, y)) if ev == cv2.EVENT_LBUTTONDOWN else None)
-
     for name in names:
         while True:
             clicked.clear()
@@ -244,20 +250,60 @@ def calibrate(only):
             k = -1
             while k not in (13, ord("r")):
                 k = cv2.waitKey(30) & 0xFF
-            if k == 13 and radius > 0:
+            if k == 13:
                 cfg["colors"][name] = {"lab": lab, "radius": round(radius, 1)}
                 print(f"  {name}: color {lab}, size {radius:.0f}px")
                 break
     cv2.destroyAllWindows()
 
-    cfg.setdefault("downscale", 2)
-    cfg.setdefault("tolerance", DEFAULT_TOLERANCE)
-    cfg.setdefault("death_timeout", 1.5)
-    cfg.setdefault("require_focus", True)
-    if "player" not in cfg["colors"]:
+
+def calibrate(only):
+    cfg = read_config_or_empty()
+    region_only = only == ["region"]
+    names = [] if region_only else (only or CLASSES)
+    for n in names:
+        if n not in CLASSES:
+            sys.exit(f"Unknown thing '{n}'. Choose from: region, {', '.join(CLASSES)}")
+
+    win = "Swarm bot calibration"
+    intro = np.zeros((230, 760, 3), np.uint8)
+    lines = [("CALIBRATION", (120, 255, 140), 0.9),
+             ("1. Start the game in Roblox with as many kinds of mobs on screen as you can", (230, 230, 230), 0.5),
+             ("   (press P in the game to pause once they're there).", (230, 230, 230), 0.5),
+             ("2. Come back to this window and press ENTER.", (230, 230, 230), 0.5),
+             ("3. Switch to Roblox: a screenshot is taken 5 seconds later.", (230, 230, 230), 0.5),
+             ("Esc = cancel", (150, 150, 150), 0.5)]
+    for i, (text, color, size) in enumerate(lines):
+        cv2.putText(intro, text, (20, 40 + i * 34), cv2.FONT_HERSHEY_SIMPLEX, size, color, 1, cv2.LINE_AA)
+    show_on_top(win, intro)
+    k = -1
+    while k not in (13, 27):
+        k = cv2.waitKey(30) & 0xFF
+    cv2.destroyAllWindows()
+    if k == 27:
+        sys.exit("Cancelled, nothing saved.")
+    shot, off_x, off_y = grab_screen()
+    show_on_top(win, banner(np.zeros((40, 760, 3), np.uint8), "Got it."))
+
+    if not only or region_only or "region" not in cfg:
+        disp, s = fit_to_screen(shot)
+        print("\nDrag a box around the whole play area, then press Enter (C = cancel).")
+        x, y, w, h = cv2.selectROI(win, banner(disp, "Drag a box around the PLAY AREA, then press ENTER"), False, False)
+        if w == 0 or h == 0:
+            sys.exit("No play area selected, nothing saved.")
+        cfg["region"] = {"left": int(x / s) + off_x, "top": int(y / s) + off_y, "width": int(w / s), "height": int(h / s)}
+
+    r = cfg["region"]
+    crop = shot[r["top"] - off_y:r["top"] - off_y + r["height"], r["left"] - off_x:r["left"] - off_x + r["width"]]
+    if names:
+        click_through(cfg, crop, names)
+        cfg["preset"] = False
+    cv2.destroyAllWindows()
+    if not region_only and "player" not in cfg.get("colors", {}):
         sys.exit("The player is required. Nothing saved; run calibrate again.")
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    save_config(cfg)
+    if region_only and cfg.get("preset"):
+        apply_preset()  # re-scale the preset sizes to the new play area
     print(f"\nSaved {CONFIG_PATH}. Next: use Test view to check the bot sees everything.")
 
 
@@ -342,7 +388,8 @@ class BotController:
                 if not self.running:
                     try:
                         cfg = load_config()  # re-read, in case calibration changed it
-                        bot = BotRunner(cfg, WindowsIO(cfg["region"], cfg.get("require_focus", True)))
+                        bot = BotRunner(cfg, WindowsIO(cfg["region"], cfg.get("require_focus", True),
+                                                          cfg.get("fire_with", "space")))
                         self.running = True
                         last_status = None
                         self.on_event("status", "Running")
@@ -438,8 +485,12 @@ def run():
 
 def main(args):
     try:
-        if args and args[0] == "calibrate":
+        if args and args[0] == "calibrate" and len(args) > 2 and args[1] == "--image":
+            calibrate_from_image(args[2], args[3:])
+        elif args and args[0] == "calibrate":
             calibrate(args[1:])
+        elif args and args[0] == "preset":
+            print("Preset colors applied." if apply_preset() else "Preset colors applied. Now set the play area.")
         elif args and args[0] == "view":
             view()
         elif os.name != "nt":

@@ -1,7 +1,7 @@
 # Swarm screen bot (Roblox)
 
 Plays the Roblox arcade swarm game for you by reading your screen and pressing keys like a person:
-it holds WASD to dodge, moves the mouse to aim and holds left click to shoot.
+it holds WASD to dodge, moves the mouse to aim and holds **Space** to shoot (switchable to left click in the app).
 
 - **`*`** starts it (Shift+8 or numpad `*`)
 - **`-`** stops it
@@ -34,6 +34,15 @@ Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It 
 - settings: only control Roblox when it's the active window, how long the player must be gone
   before it counts as dead, and color tolerance
 - a log of what happened
+
+## Quick setup (no clicking)
+1. Click **Use preset colors**: colors and sizes measured from real screenshots of the game.
+2. Click **Set play area**: press Enter, switch to Roblox, and after 5 seconds drag a box around the game.
+3. Click **Test view** to check everything gets circled.
+
+If the preset doesn't match (different graphics settings), calibrate yourself:
+**Calibrate from screenshot...** lets you pick a screenshot you saved with `/` and click each thing on it,
+so you don't have to catch mobs live.
 
 ## Calibrate (once, or again if colors/sizes change)
 Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
@@ -78,6 +87,7 @@ If the bot misbehaves (e.g. keeps running to one side), send these; they show ex
 | `downscale` | 2 = look at half resolution (faster). 1 = full resolution (more accurate, slower). |
 | `death_timeout` | Seconds the player must be missing before it counts as dead and stops. |
 | `require_focus` | `true` = only send input while Roblox is the active window. |
+| `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
 
 ## How it works
 - `vision.py` finds things by color, tells same-colored things apart by size (red square = mob,

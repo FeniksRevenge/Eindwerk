@@ -30,6 +30,23 @@ CLASS_HELP = {
 
 DEFAULT_TOLERANCE = [30, 14, 14]  # allowed difference in L, a, b (OpenCV 8-bit Lab)
 
+# Colors and sizes measured from real screenshots of the Roblox game (a 2534x1239 play area).
+# Sizes are scaled to your play area's height when the preset is applied.
+PRESET = {
+    "ref_height": 1239,
+    "colors": {
+        "player": {"lab": [172, 128, 123], "radius": 26.5},
+        "enemy_bullet": {"lab": [131, 191, 167], "radius": 14.5},
+        "shooter_bullet": {"lab": [189, 156, 192], "radius": 13.0},
+        "grunt": {"lab": [139, 191, 165], "radius": 43.0},
+        "shooter": {"lab": [189, 156, 192], "radius": 14.0},
+        "tank": {"lab": [151, 190, 65], "radius": 63.0},
+        "tank_mini": {"lab": [183, 171, 85], "radius": 29.5},
+        "boss": {"lab": [131, 191, 167], "radius": 128.0},
+        "health": {"lab": [217, 64, 174], "radius": 9.0},
+    },
+}
+
 
 def bgr_to_lab_pixel(bgr):
     px = np.uint8([[bgr]])

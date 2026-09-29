@@ -11,9 +11,9 @@ import queue
 import subprocess
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
-from swarm_bot import CONFIG_PATH, FROZEN, SHOTS_DIR, BotController
+from swarm_bot import CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset
 from vision import CLASSES, DEFAULT_TOLERANCE
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # source folder (not used when frozen)
@@ -109,8 +109,14 @@ class App:
         self._section(wrap, "SETUP")
         setup = tk.Frame(wrap, bg=BG)
         setup.pack(fill="x")
-        ttk.Button(setup, text="Calibrate everything", command=lambda: self.launch("calibrate")).pack(side="left", padx=(0, 6))
+        ttk.Button(setup, text="Use preset colors", command=self.use_preset).pack(side="left", padx=(0, 6))
+        ttk.Button(setup, text="Set play area", command=lambda: self.launch("calibrate", "region")).pack(side="left", padx=(0, 6))
         ttk.Button(setup, text="Test view", command=lambda: self.launch("view")).pack(side="left")
+
+        setup2 = tk.Frame(wrap, bg=BG)
+        setup2.pack(fill="x", pady=(8, 0))
+        ttk.Button(setup2, text="Calibrate everything", command=lambda: self.launch("calibrate")).pack(side="left", padx=(0, 6))
+        ttk.Button(setup2, text="Calibrate from screenshot...", command=self.calibrate_from_file).pack(side="left")
 
         redo = tk.Frame(wrap, bg=BG)
         redo.pack(fill="x", pady=(8, 0))
@@ -135,6 +141,11 @@ class App:
 
         grid = tk.Frame(wrap, bg=BG)
         grid.pack(fill="x")
+        tk.Label(grid, text="Shoot with", bg=BG, fg=FG, font=FONT).grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.fire_var = tk.StringVar(value="Space" if cfg.get("fire_with", "space") == "space" else "Left mouse")
+        fire_box = ttk.Combobox(grid, textvariable=self.fire_var, values=["Space", "Left mouse"], state="readonly", width=12)
+        fire_box.grid(row=2, column=1, sticky="e", pady=(6, 0))
+        fire_box.bind("<<ComboboxSelected>>", lambda _e: self.save_settings())
         tk.Label(grid, text="Stop after player missing (s)", bg=BG, fg=FG, font=FONT).grid(row=0, column=0, sticky="w")
         self.death_var = tk.DoubleVar(value=cfg.get("death_timeout", 1.5))
         ttk.Spinbox(grid, from_=0.5, to=10, increment=0.5, textvariable=self.death_var, width=6,
@@ -201,7 +212,7 @@ class App:
     def refresh_calibration(self):
         cfg = read_config()
         if not cfg or "region" not in cfg:
-            self.calib_var.set("Not calibrated yet. Click 'Calibrate everything' first.")
+            self.calib_var.set("Not set up yet. Click 'Use preset colors', then 'Set play area'.")
             self.start_btn.state(["disabled"])
             return
         done = [n for n in CLASSES if cfg.get("colors", {}).get(n)]
@@ -232,6 +243,20 @@ class App:
         self.proc = subprocess.Popen(cmd, cwd=os.path.dirname(CONFIG_PATH))
         self.write_log(f"Opened {' '.join(args)} in a new window.")
 
+    def use_preset(self):
+        has_region = apply_preset()
+        self.write_log("Preset colors applied (measured from your screenshots)." +
+                       ("" if has_region else " Now click 'Set play area'."))
+        self.refresh_calibration()
+
+    def calibrate_from_file(self):
+        path = filedialog.askopenfilename(
+            title="Pick a screenshot of the play area (not a _bot one)",
+            initialdir=SHOTS_DIR if os.path.isdir(SHOTS_DIR) else os.path.dirname(CONFIG_PATH),
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
+        if path:
+            self.launch("calibrate", "--image", path)
+
     def open_shots(self):
         os.makedirs(SHOTS_DIR, exist_ok=True)
         if os.name == "nt":
@@ -249,6 +274,7 @@ class App:
             return
         v = int(self.tol_var.get())
         new = {"require_focus": bool(self.focus_var.get()), "death_timeout": death,
+               "fire_with": "space" if self.fire_var.get() == "Space" else "mouse",
                "tolerance": [round(v * 30 / 14), v, v]}
         if any(cfg.get(k) != val for k, val in new.items()):
             cfg.update(new)
