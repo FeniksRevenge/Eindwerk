@@ -36,8 +36,8 @@ Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It 
 - a log of what happened
 
 ## Quick setup (no clicking)
-1. Click **Use preset colors**: colors and sizes measured from real screenshots of the game.
-2. Click **Set play area**: press Enter, switch to Roblox, and after 5 seconds drag a box around the game.
+1. Put Roblox on your **main screen** (the bot only looks at the main screen, all of it, top to bottom).
+2. Click **Use preset colors**: colors and sizes measured from real screenshots of the game.
 3. Click **Test view** to check everything gets circled.
 
 If the preset doesn't match (different graphics settings), calibrate yourself:
@@ -47,9 +47,8 @@ so you don't have to catch mobs live.
 ## Calibrate (once, or again if colors/sizes change)
 Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
 1. Start the game in Roblox. Try to have a basic mob, an orange shooter, a bullet and ideally the boss on screen; press **P** to pause there.
-2. Press Enter in the calibration window, switch to Roblox within 5 seconds. It takes a screenshot.
-3. Drag a box around the **play area** (the whole game screen) and press Enter.
-4. Click on each thing it asks for. Press **S** to skip something that isn't on screen, **R** to redo a click.
+2. Press Enter in the calibration window, switch to Roblox within 5 seconds. It takes a screenshot of the main screen.
+3. Click on each thing it asks for. Press **S** to skip something that isn't on screen, **R** to redo a click.
    It asks for, in order: the **gray ball** (you), a **red bullet** (boss), an **orange bullet** (shooter),
    a **yellow mob's bullet**, the **red square** (basic mob), the **orange ball** (shooter, not its ring),
    the **yellow mob** (shoots in all directions), a **purple tank**, one of the **tiny mobs** a dead tank

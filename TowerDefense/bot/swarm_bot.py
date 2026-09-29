@@ -144,18 +144,45 @@ class WindowsIO:
 
 # --------------------------------------------------------------------------- config
 def load_config():
+    """Read config.json. The play area is always kept equal to the whole main screen."""
     if not os.path.exists(CONFIG_PATH):
-        raise FileNotFoundError("No config.json yet. Calibrate first.")
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
+        raise FileNotFoundError("No config.json yet. Click 'Use preset colors' first.")
+    with CONFIG_LOCK:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        if use_main_screen(cfg):
+            save_config(cfg)
+    return cfg
+
+
+def main_monitor():
+    """The main (primary) screen: the one at position 0,0. The bot only ever looks at this screen."""
+    with mss.mss() as sct:
+        mons = sct.monitors[1:] or sct.monitors
+        mon = next((m for m in mons if m["left"] == 0 and m["top"] == 0), mons[0])
+    return {"left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]}
+
+
+def use_main_screen(cfg):
+    """Make the play area the whole main screen (top to bottom), re-scaling preset sizes to it.
+    Returns True if anything changed."""
+    region = main_monitor()
+    if cfg.get("region") == region:
+        return False
+    cfg["region"] = region
+    if cfg.get("preset"):
+        scale = region["height"] / PRESET["ref_height"]
+        cfg["colors"] = {n: {"lab": c["lab"], "radius": round(c["radius"] * scale, 1)}
+                         for n, c in PRESET["colors"].items()}
+    return True
 
 
 def grab_screen(countdown=5):
     for i in range(countdown, 0, -1):
         print(f"  Taking a screenshot in {i}... (switch to Roblox now)")
         time.sleep(1)
+    mon = main_monitor()
     with mss.mss() as sct:
-        mon = sct.monitors[0]  # all monitors
         img = np.ascontiguousarray(np.asarray(sct.grab(mon))[:, :, :3])
     return img, mon["left"], mon["top"]
 
@@ -205,13 +232,13 @@ def save_config(cfg):
 
 
 def apply_preset():
-    """Use the colors measured from real screenshots, scaled to this play area's size."""
+    """Use the colors measured from real screenshots, on the whole main screen."""
     cfg = read_config_or_empty()
-    scale = cfg["region"]["height"] / PRESET["ref_height"] if "region" in cfg else 1.0
-    cfg["colors"] = {n: {"lab": c["lab"], "radius": round(c["radius"] * scale, 1)} for n, c in PRESET["colors"].items()}
     cfg["preset"] = True
+    cfg.pop("region", None)
+    use_main_screen(cfg)  # sets the play area and scales the preset sizes to it
     save_config(cfg)
-    return "region" in cfg
+    return True
 
 
 def calibrate_from_image(path, only):
@@ -267,7 +294,12 @@ def click_through(cfg, crop, names):
 def calibrate(only):
     cfg = read_config_or_empty()
     region_only = only == ["region"]
-    names = [] if region_only else (only or CLASSES)
+    if region_only:
+        use_main_screen(cfg)
+        save_config(cfg)
+        print(f"Play area set to the whole main screen: {cfg['region']}")
+        return
+    names = only or CLASSES
     for n in names:
         if n not in CLASSES:
             sys.exit(f"Unknown thing '{n}'. Choose from: region, {', '.join(CLASSES)}")
@@ -292,13 +324,8 @@ def calibrate(only):
     shot, off_x, off_y = grab_screen()
     show_on_top(win, banner(np.zeros((40, 760, 3), np.uint8), "Got it."))
 
-    if not only or region_only or "region" not in cfg:
-        disp, s = fit_to_screen(shot)
-        print("\nDrag a box around the whole play area, then press Enter (C = cancel).")
-        x, y, w, h = cv2.selectROI(win, banner(disp, "Drag a box around the PLAY AREA, then press ENTER"), False, False)
-        if w == 0 or h == 0:
-            sys.exit("No play area selected, nothing saved.")
-        cfg["region"] = {"left": int(x / s) + off_x, "top": int(y / s) + off_y, "width": int(w / s), "height": int(h / s)}
+    # The play area is always the whole main screen.
+    cfg["region"] = {"left": off_x, "top": off_y, "width": shot.shape[1], "height": shot.shape[0]}
 
     r = cfg["region"]
     crop = shot[r["top"] - off_y:r["top"] - off_y + r["height"], r["left"] - off_x:r["left"] - off_x + r["width"]]
@@ -309,8 +336,6 @@ def calibrate(only):
     if not region_only and "player" not in cfg.get("colors", {}):
         sys.exit("The player is required. Nothing saved; run calibrate again.")
     save_config(cfg)
-    if region_only and cfg.get("preset"):
-        apply_preset()  # re-scale the preset sizes to the new play area
     print(f"\nSaved {CONFIG_PATH}. Next: use Test view to check the bot sees everything.")
 
 

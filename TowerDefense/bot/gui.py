@@ -14,8 +14,8 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from swarm_bot import (CONFIG_LOCK, CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset,
-                       read_config_or_empty, save_config)
+from swarm_bot import (CONFIG_LOCK, load_config, CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset,
+                       read_config_or_empty, save_config, use_main_screen)
 from phototrainer import list_photos, train_auto
 from vision import CLASSES, DEFAULT_TOLERANCE
 
@@ -112,7 +112,7 @@ class App:
         setup = tk.Frame(wrap, bg=BG)
         setup.pack(fill="x")
         ttk.Button(setup, text="Use preset colors", command=self.use_preset).pack(side="left", padx=(0, 6))
-        ttk.Button(setup, text="Set play area", command=lambda: self.launch("calibrate", "region")).pack(side="left", padx=(0, 6))
+        ttk.Button(setup, text="Use main screen", command=self.set_main_screen).pack(side="left", padx=(0, 6))
         ttk.Button(setup, text="Test view", command=lambda: self.launch("view")).pack(side="left")
 
         setup2 = tk.Frame(wrap, bg=BG)
@@ -180,10 +180,14 @@ class App:
 
         # --- log -------------------------------------------------------------
         self._section(wrap, "LOG", top=12)
-        self.log = tk.Text(wrap, height=7, width=52, bg=PANEL, fg=FG, font=MONO, relief="flat",
+        self.log = tk.Text(wrap, height=5, width=52, bg=PANEL, fg=FG, font=MONO, relief="flat",
                            highlightbackground=LINE, highlightthickness=1, state="disabled", padx=8, pady=6)
         self.log.pack(fill="x")
 
+        try:
+            load_config()  # keeps the play area equal to the whole main screen
+        except FileNotFoundError:
+            pass
         self.refresh_calibration()
         self.refresh_photos()
         cfg_now = read_config() or {}
@@ -235,7 +239,7 @@ class App:
     def refresh_calibration(self):
         cfg = read_config()
         if not cfg or "region" not in cfg:
-            self.calib_var.set("Not set up yet. Click 'Use preset colors', then 'Set play area'.")
+            self.calib_var.set("Not set up yet. Click 'Use preset colors'.")
             self.start_btn.state(["disabled"])
             return
         done = [n for n in CLASSES if cfg.get("colors", {}).get(n)]
@@ -300,10 +304,19 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def set_main_screen(self):
+        with CONFIG_LOCK:
+            cfg = read_config_or_empty()
+            use_main_screen(cfg)
+            save_config(cfg)
+        r = cfg["region"]
+        self.write_log(f"Play area = whole main screen ({r['width']}x{r['height']}).")
+        self.refresh_calibration()
+
     def use_preset(self):
-        has_region = apply_preset()
-        self.write_log("Preset colors applied (measured from your screenshots)." +
-                       ("" if has_region else " Now click 'Set play area'."))
+        apply_preset()
+        r = (read_config() or {}).get("region", {})
+        self.write_log(f"Preset colors applied. Play area = whole main screen ({r.get('width')}x{r.get('height')}).")
         self.refresh_calibration()
 
     def calibrate_from_file(self):
