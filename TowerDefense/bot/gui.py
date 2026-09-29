@@ -190,7 +190,8 @@ class App:
         trow = tk.Frame(wrap, bg=BG)
         trow.pack(fill="x")
         ttk.Button(trow, text="Train on photos (ask me)", command=self.train_semi).pack(side="left", padx=(0, 6))
-        ttk.Button(trow, text="Train on photos (auto)", command=self.train_auto).pack(side="left")
+        ttk.Button(trow, text="Train on photos (auto)", command=self.train_auto).pack(side="left", padx=(0, 6))
+        ttk.Button(trow, text="Clear ignore list", command=self.clear_ignore).pack(side="left")
         self.photos_var = tk.StringVar()
         tk.Label(wrap, textvariable=self.photos_var, bg=BG, fg=MUTED, font=FONT, justify="left",
                  wraplength=400).pack(anchor="w", pady=(6, 0))
@@ -302,6 +303,15 @@ class App:
         self.photos_var.set(f"{n} photo(s) waiting. Press / while playing to add more. "
                             "Each photo is deleted once it's been trained on." if n else
                             "No photos yet. Press / while playing to save some, then train on them here.")
+
+    def clear_ignore(self):
+        with CONFIG_LOCK:
+            cfg = read_config_or_empty()
+            n = len(cfg.get("ignore", []))
+            cfg["ignore"] = []
+            save_config(cfg)
+        self.write_log(f"Ignore list cleared ({n} thing(s) the bot was told to ignore are back)." if n
+                       else "The ignore list was already empty.")
 
     def train_semi(self):
         if not list_photos(SHOTS_DIR):

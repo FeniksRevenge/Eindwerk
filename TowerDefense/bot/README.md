@@ -91,6 +91,11 @@ deleted (with its `_bot.png` and `.json`).
 | **S** | skip this photo (it's kept) |
 | **Esc** | stop (the current photo is kept) |
 
+Gray crossed-out circles are things on the **ignore list** (you once said "not a thing"). If one of them
+*is* a thing, click it and pick what it is: it's taken off the ignore list and learned. **Clear ignore
+list** in the app empties the whole list at once. When you click, the smallest circle under the mouse is
+picked, so a bullet right next to a shooter's ring gets the bullet.
+
 **Train on photos (auto)**: goes through all photos by itself and only learns from detections that
 already match well, so your real colors and sizes slowly replace the preset ones.
 

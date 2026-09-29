@@ -199,9 +199,10 @@ class Detector:
                 return True
         return False
 
-    def detect_detailed(self, bgr):
+    def detect_detailed(self, bgr, keep_ignored=False):
         """Every detection as a dict: name (what the bot treats it as), cls (the calibrated class),
-        x, y, r (full-size pixels) and lab (its average color)."""
+        x, y, r (full-size pixels) and lab (its average color). With keep_ignored, things on the
+        ignore list are included too, marked "ignored": True (the photo trainer shows them)."""
         s = self.scale
         small = cv2.resize(bgr, (bgr.shape[1] // s, bgr.shape[0] // s), interpolation=cv2.INTER_NEAREST) if s > 1 else bgr
         lab_img = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
@@ -242,10 +243,12 @@ class Detector:
                         used_rings.add(ring)
                     elif "shooter_bullet" in names and r < 2.5 * dict(members).get("shooter_bullet", r):
                         cls = "shooter_bullet"
-                if self.ignore and self._ignored(lab, r):
+                ignored = bool(self.ignore) and self._ignored(lab, r)
+                if ignored and not keep_ignored:
                     continue
                 name = "enemy_bullet" if cls in BULLET_CLASSES else cls  # all bullets are dodged the same way
-                found.append({"name": name, "cls": cls, "x": x, "y": y, "r": r, "lab": [float(v) for v in lab]})
+                found.append({"name": name, "cls": cls, "x": x, "y": y, "r": r, "lab": [float(v) for v in lab],
+                              "ignored": ignored})
             # A shooter's ring with no ball visible (ball flashing or hidden) is still a shooter.
             # The boss's small orange rings are too small to count.
             for g in rings or []:

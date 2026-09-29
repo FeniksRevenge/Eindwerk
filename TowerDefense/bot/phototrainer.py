@@ -43,8 +43,17 @@ def delete_photo(path):
             pass
 
 
+def unignore(cfg, lab, radius):
+    """Remove 'not a thing' entries that match this color+size (you just said it IS a thing)."""
+    tol = np.array(cfg.get("tolerance", [30, 14, 14]))
+    cfg["ignore"] = [ig for ig in cfg.get("ignore", [])
+                     if not (np.all(np.abs(np.array(ig["lab"]) - np.array(lab)) <= tol * 0.5)
+                             and 0.75 <= float(radius) / ig["radius"] <= 1.33)]
+
+
 def learn(cfg, cls, lab, radius):
     """Blend one confirmed example into what the bot knows about this kind of thing."""
+    unignore(cfg, lab, radius)
     colors = cfg.setdefault("colors", {})
     c = colors.get(cls)
     if not c or not c.get("lab"):
@@ -118,6 +127,11 @@ def _draw(disp, s, items):
     out = disp.copy()
     for it in items:
         x, y, r = int(it["x"] * s), int(it["y"] * s), max(4, int(it["r"] * s))
+        if it["status"] == "ignored":
+            cv2.circle(out, (x, y), r + 3, (120, 120, 120), 1)
+            cv2.line(out, (x - r, y - r), (x + r, y + r), (120, 120, 120), 1)
+            cv2.line(out, (x - r, y + r), (x + r, y - r), (120, 120, 120), 1)
+            continue
         if it["status"] == "wrong":
             cv2.circle(out, (x, y), r + 3, (60, 60, 60), 2)
             cv2.line(out, (x - r, y - r), (x + r, y + r), (0, 0, 255), 2)
@@ -166,11 +180,13 @@ def train_semi(cfg, folder, save):
             delete_photo(path)
             continue
         disp, s = _fit(img)
-        items = [dict(d, status="ok") for d in Detector(cfg).detect_detailed(img)]
+        items = [dict(d, status="ignored" if d.get("ignored") else "ok")
+                 for d in Detector(cfg).detect_detailed(img, keep_ignored=True)]
         history = []
         while True:
             help_lines = [f"Photo {n}/{len(photos)}: is this right?   ENTER = yes, learn + next    S = skip    Esc = stop",
-                          "Click a circle = it's wrong    Click something without a circle = it was missed    U = undo"]
+                          "Click a circle = it's wrong    Click something without a circle = it was missed    U = undo",
+                          "Gray crossed circles = on the ignore list; click one if it IS a thing"]
             cv2.imshow(win, _bar(_draw(disp, s, items), help_lines))
             clicks.clear()
             k = -1
@@ -189,15 +205,17 @@ def train_semi(cfg, folder, save):
                 for it in items:
                     if it["status"] == "wrong":
                         forget(cfg, it["lab"], it["r"])
-                    else:
+                    elif it["status"] != "ignored":
                         learn(cfg, it["cls"], it["lab"], it["r"])
                 save(cfg)
                 delete_photo(path)
                 break
             # A click: on an existing circle (wrong answer) or on something missed.
             cx, cy = clicks[0][0] / s, clicks[0][1] / s
-            hit = next((it for it in items if it["status"] != "wrong"
-                        and (it["x"] - cx) ** 2 + (it["y"] - cy) ** 2 <= (it["r"] + 8) ** 2), None)
+            # The smallest circle under the click (a bullet next to a shooter's big ring = the bullet).
+            under = [it for it in items if it["status"] != "wrong"
+                     and (it["x"] - cx) ** 2 + (it["y"] - cy) ** 2 <= (it["r"] + 8) ** 2]
+            hit = min(under, key=lambda it: it["r"]) if under else None
             shown = _draw(disp, s, items)
             if hit is not None:
                 choice = _menu(win, shown, f"The bot said '{hit['cls']}'. What is it really?")
@@ -208,6 +226,10 @@ def train_semi(cfg, folder, save):
                 if choice == "none":
                     hit["status"] = "wrong"
                 else:
+                    # Learn from exactly what was clicked (its own color and size).
+                    lab, radius = measure_blob(img, int(cx), int(cy))
+                    if lab is not None and choice != "shooter":
+                        hit.update(lab=lab, r=radius, x=cx, y=cy)
                     hit.update(cls=choice, status="fixed")
             else:
                 choice = _menu(win, shown, "What did the bot miss here?")
