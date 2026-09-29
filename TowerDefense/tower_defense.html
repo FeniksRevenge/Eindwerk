@@ -1,4 +1,4 @@
-<title>Pathline Defense</title>
+<title>Swarm Defense</title>
 <meta charset="utf-8">
 <style>
   /* Layout: one fixed 16:9 playfield, letterboxed and scaled to fit the window. Dark arcade look on purpose (single theme). */
@@ -31,36 +31,36 @@
 
   // ---------------------------------------------------------------- config
   const W = 1280, H = 720;
-  const PATH_WIDTH = 56;
   const PLAYER_RADIUS = 13, PLAYER_SPEED = 260, PLAYER_FIRE_DELAY = 0.11;
   const BULLET_SPEED = 820, BULLET_DAMAGE = 10;
-  const BASE_MAX_HP = 20, START_GOLD = 100, WAVE_BREAK = 8;
-  const TOWER_RADIUS = 18, BASE_RADIUS = 38;
-
-  const PATH = [[-40,140],[260,140],[260,460],[560,460],[560,220],[880,220],[880,560],[1140,560],[1140,330]];
-  const BASE = PATH[PATH.length - 1];
+  const START_GOLD = 100, WAVE_BREAK = 8;
+  const TOWER_RADIUS = 18;
+  // Shooters stop at this distance band from the player and circle around instead of charging.
+  const SHOOTER_MIN = 260, SHOOTER_MAX = 380;
 
   const MOB_TYPES = {
     grunt:   { hp: 30,  speed: 70,  radius: 13, color: "#dc5050", gold: 5,  shoots: false },
-    runner:  { hp: 18,  speed: 135, radius: 10, color: "#f0b43c", gold: 6,  shoots: false },
+    runner:  { hp: 18,  speed: 135, radius: 10, color: "#e8e05a", gold: 6,  shoots: false },
     tank:    { hp: 160, speed: 42,  radius: 20, color: "#965ac8", gold: 18, shoots: false },
-    shooter: { hp: 40,  speed: 60,  radius: 14, color: "#50c8dc", gold: 10, shoots: true  },
+    shooter: { hp: 40,  speed: 60,  radius: 14, color: "#ff8c32", gold: 10, shoots: true  },
   };
   const TOWER_TYPES = {
     gun:    { cost: 50,  range: 170, delay: 0.35, damage: 8,  speed: 700, splash: 0,  color: "#5aaaff", key: "1", name: "Gun" },
-    cannon: { cost: 120, range: 210, delay: 1.4,  damage: 40, speed: 420, splash: 60, color: "#ff8c46", key: "2", name: "Cannon" },
+    cannon: { cost: 120, range: 210, delay: 1.4,  damage: 40, speed: 420, splash: 60, color: "#ff6fb0", key: "2", name: "Cannon" },
   };
 
   // ---------------------------------------------------------------- helpers
   const rand = (a, b) => a + Math.random() * (b - a);
   const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
-  function distPointSeg(px, py, [ax, ay], [bx, by]) {
-    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
-    if (!l2) return dist(px, py, ax, ay);
-    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
-    return dist(px, py, ax + t * dx, ay + t * dy);
+  // Random point just outside the screen edge, at least `minDist` away from (px, py).
+  function edgeSpawn(px, py, minDist = 300) {
+    for (let i = 0; ; i++) {
+      const side = Math.floor(Math.random() * 4);
+      const x = side === 0 ? -30 : side === 1 ? W + 30 : rand(0, W);
+      const y = side === 2 ? -30 : side === 3 ? H + 30 : rand(0, H);
+      if (dist(x, y, px, py) >= minDist || i > 20) return [x, y];
+    }
   }
-  const distToPath = (x, y) => Math.min(...PATH.slice(0, -1).map((p, i) => distPointSeg(x, y, p, PATH[i + 1])));
   const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
   // ---------------------------------------------------------------- canvas + input
@@ -118,23 +118,29 @@
   }
 
   class Mob {
-    constructor(kind, hpMult) {
+    constructor(kind, hpMult, x, y) {
       const s = MOB_TYPES[kind];
       Object.assign(this, { kind, speed: s.speed, radius: s.radius, color: s.color, gold: s.gold, shoots: s.shoots });
       this.maxHp = this.hp = s.hp * hpMult;
-      [this.x, this.y] = PATH[0];
-      this.target = 1; this.alive = true; this.reachedBase = false;
-      this.shootTimer = rand(1, 2.5); this.flash = 0; this.progress = 0;
+      this.x = x; this.y = y; this.alive = true;
+      this.shootTimer = rand(1, 2.5); this.flash = 0;
+      this.orbitDir = Math.random() < 0.5 ? 1 : -1;
     }
     update(dt, player, bullets) {
-      let rem = this.speed * dt;
-      while (rem > 0 && this.target < PATH.length) {
-        const [tx, ty] = PATH[this.target];
-        const d = dist(this.x, this.y, tx, ty);
-        if (d <= rem) { this.x = tx; this.y = ty; rem -= d; this.progress += d; this.target++; }
-        else { this.x += (tx - this.x) / d * rem; this.y += (ty - this.y) / d * rem; this.progress += rem; rem = 0; }
+      const d0 = dist(player.x, player.y, this.x, this.y) || 1;
+      const nx0 = (player.x - this.x) / d0, ny0 = (player.y - this.y) / d0;
+      let vx = nx0, vy = ny0;
+      if (this.shoots) {
+        // Close in until in range, back off if too close, otherwise circle the player.
+        const onScreen = this.x > 20 && this.x < W - 20 && this.y > 60 && this.y < H - 20;
+        const radial = !onScreen || d0 > SHOOTER_MAX ? 1 : d0 < SHOOTER_MIN ? -1 : 0;
+        vx = nx0 * radial - ny0 * this.orbitDir * 0.8;
+        vy = ny0 * radial + nx0 * this.orbitDir * 0.8;
+        const l = Math.hypot(vx, vy) || 1;
+        vx /= l; vy /= l;
       }
-      if (this.target >= PATH.length) { this.reachedBase = true; this.alive = false; }
+      this.x += vx * this.speed * dt;
+      this.y += vy * this.speed * dt;
 
       if (this.shoots) {
         this.shootTimer -= dt;
@@ -166,7 +172,8 @@
     update(dt, mobs, bullets) {
       this.cooldown = Math.max(0, this.cooldown - dt);
       let target = null;
-      for (const m of mobs) if (dist(m.x, m.y, this.x, this.y) <= this.spec.range && (!target || m.progress > target.progress)) target = m;
+      let best = this.spec.range;
+      for (const m of mobs) { const d = dist(m.x, m.y, this.x, this.y); if (d <= best) { best = d; target = m; } }
       if (!target) return;
       const d = dist(target.x, target.y, this.x, this.y);
       if (!d) return;
@@ -220,12 +227,6 @@
     b.strokeStyle = "#20252d"; b.lineWidth = 1;
     for (let x = 0; x <= W; x += 40) { b.beginPath(); b.moveTo(x + 0.5, 0); b.lineTo(x + 0.5, H); b.stroke(); }
     for (let y = 0; y <= H; y += 40) { b.beginPath(); b.moveTo(0, y + 0.5); b.lineTo(W, y + 0.5); b.stroke(); }
-    b.lineJoin = "round"; b.lineCap = "round";
-    for (const [color, w] of [["#4e463a", PATH_WIDTH + 6], ["#3a342c", PATH_WIDTH]]) {
-      b.strokeStyle = color; b.lineWidth = w; b.beginPath();
-      PATH.forEach(([x, y], i) => i ? b.lineTo(x, y) : b.moveTo(x, y));
-      b.stroke();
-    }
   })();
 
   // ---------------------------------------------------------------- game
@@ -233,7 +234,7 @@
     reset() {
       this.player = { x: W / 2, y: H / 2 + 180, cooldown: 0, ax: 1, ay: 0 };
       this.mobs = []; this.bullets = []; this.towers = []; this.particles = [];
-      this.gold = START_GOLD; this.baseHp = BASE_MAX_HP; this.wave = 0;
+      this.gold = START_GOLD; this.wave = 0;
       this.spawnQueue = []; this.spawnTimer = 0; this.spawnInterval = 1; this.hpMult = 1;
       this.breakTimer = 4; this.kills = 0; this.selected = null;
       this.over = false; this.deathReason = ""; this.paused = false;
@@ -269,8 +270,6 @@
 
     canPlace(x, y) {
       if (!this.selected) return false;
-      if (distToPath(x, y) < PATH_WIDTH / 2 + TOWER_RADIUS) return false;
-      if (dist(x, y, BASE[0], BASE[1]) < BASE_RADIUS + TOWER_RADIUS + 10) return false;
       if (!(x > TOWER_RADIUS && x < W - TOWER_RADIUS && y > 60 && y < H - TOWER_RADIUS)) return false;
       return this.towers.every(t => dist(t.x, t.y, x, y) >= TOWER_RADIUS * 2 + 4);
     },
@@ -314,18 +313,34 @@
       }
       if (this.spawnQueue.length) {
         this.spawnTimer -= dt;
-        if (this.spawnTimer <= 0) { this.mobs.push(new Mob(this.spawnQueue.pop(), this.hpMult)); this.spawnTimer = this.spawnInterval; }
+        if (this.spawnTimer <= 0) {
+          const [sx, sy] = edgeSpawn(p.x, p.y);
+          this.mobs.push(new Mob(this.spawnQueue.pop(), this.hpMult, sx, sy));
+          this.spawnTimer = this.spawnInterval;
+        }
       }
 
       this.mobs.forEach(m => m.update(dt, p, this.bullets));
       this.towers.forEach(t => t.update(dt, this.mobs, this.bullets));
+      this.separate();
       this.bullets.forEach(b => b.update(dt));
       this.collide();
 
-      for (const m of this.mobs) if (m.reachedBase) { this.baseHp -= m.kind === "tank" ? 2 : 1; this.burst(m.x, m.y, "#ff5050", 14); }
       this.mobs = this.mobs.filter(m => m.alive);
       this.bullets = this.bullets.filter(b => b.alive);
-      if (this.baseHp <= 0) { this.baseHp = 0; this.end("The base was overrun"); }
+    },
+
+    // Push overlapping mobs apart so a wave doesn't collapse into one blob.
+    separate() {
+      const ms = this.mobs;
+      for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) {
+        const a = ms[i], b = ms[j], min = a.radius + b.radius;
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+        if (d > 0 && d < min) {
+          const push = (min - d) / 2, ux = dx / d, uy = dy / d;
+          a.x -= ux * push; a.y -= uy * push; b.x += ux * push; b.y += uy * push;
+        }
+      }
     },
 
     collide() {
@@ -359,11 +374,6 @@
 
     draw() {
       ctx.drawImage(bg, 0, 0);
-      // base
-      circle(BASE[0], BASE[1], BASE_RADIUS, "#3c6ec8");
-      ring(BASE[0], BASE[1], BASE_RADIUS, "#aad2ff", 3);
-      text("BASE", BASE[0], BASE[1], { size: 16, align: "center", font: "ui", weight: 700 });
-
       this.towers.forEach(t => t.draw(dist(t.x, t.y, mouse.x, mouse.y) < TOWER_RADIUS));
       this.mobs.forEach(m => m.draw());
       this.bullets.forEach(b => b.draw());
@@ -398,7 +408,6 @@
         : `next wave in ${Math.max(0, Math.ceil(this.breakTimer))}s [Space]`;
       const parts = [
         [`Wave ${this.wave}`, "#e6e8eb"],
-        [`Base ${this.baseHp}/${BASE_MAX_HP}`, this.baseHp <= 5 ? "#ff7878" : "#8cbeff"],
         [`Gold ${this.gold}`, "#ffd75a"],
         [`Kills ${this.kills}`, "#c8c8c8"],
         [status, "#8b939e"],
@@ -422,10 +431,10 @@
       if (this.messageTimer > 0 && !this.over && this.started)
         text(this.message, W / 2, 110, { size: 56, align: "center", font: "ui", weight: 700, alpha: Math.min(1, this.messageTimer) });
 
-      if (!this.started) this.overlay("PATHLINE DEFENSE", "Click to start", [
+      if (!this.started) this.overlay("SWARM DEFENSE", "Click to start", [
         "WASD move   ·   Mouse aim   ·   Hold left click to shoot",
         "1 / 2 pick a tower, right click to build it   ·   Space skips the break   ·   P pauses",
-        "One hit and you're dead. Keep mobs off the base.",
+        "Mobs come from every side. One hit and you're dead.",
       ]);
       else if (this.paused) this.overlay("PAUSED", "Press P or Esc to resume");
       else if (this.over) this.overlay("GAME OVER", `${this.deathReason}  ·  wave ${this.wave}, ${this.kills} kills  ·  press R to restart`);

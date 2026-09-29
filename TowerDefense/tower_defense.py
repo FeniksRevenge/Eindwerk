@@ -1,11 +1,12 @@
 """
-Tower Defense Shooter
----------------------
-Mobs walk a path toward your base. You run around and shoot them yourself,
-and you can drop towers with the gold you earn.
+Swarm Defense
+-------------
+Mobs come in from every side and run straight at you. Orange shooters keep
+their distance, circle you and fire. Shoot them yourself and drop towers with
+the gold you earn.
 
 One hit and you're dead: touching a mob or getting hit by a mob bullet ends
-the run. If too many mobs reach the base, you also lose.
+the run.
 
 Controls
   WASD            move
@@ -32,9 +33,6 @@ FPS = 60
 
 BG_COLOR = (24, 28, 34)
 GRID_COLOR = (32, 37, 45)
-PATH_COLOR = (58, 52, 44)
-PATH_EDGE = (78, 70, 58)
-PATH_WIDTH = 56
 
 PLAYER_RADIUS = 13
 PLAYER_SPEED = 260
@@ -42,37 +40,24 @@ PLAYER_FIRE_DELAY = 0.11
 BULLET_SPEED = 820
 BULLET_DAMAGE = 10
 
-BASE_MAX_HP = 20
 START_GOLD = 100
 WAVE_BREAK = 8.0  # seconds between waves
 
-# Path waypoints (mobs walk these in order, last one is the base)
-PATH = [
-    (-40, 140),
-    (260, 140),
-    (260, 460),
-    (560, 460),
-    (560, 220),
-    (880, 220),
-    (880, 560),
-    (1140, 560),
-    (1140, 330),
-]
-BASE_POS = PATH[-1]
-BASE_RADIUS = 38
+# Shooters stop at this distance band from the player and circle around instead of charging.
+SHOOTER_MIN, SHOOTER_MAX = 260, 380
 
 # name: (hp, speed, radius, color, gold, shoots)
 MOB_TYPES = {
     "grunt":   dict(hp=30,  speed=70,  radius=13, color=(220, 80, 80),  gold=5,  shoots=False),
-    "runner":  dict(hp=18,  speed=135, radius=10, color=(240, 180, 60), gold=6,  shoots=False),
+    "runner":  dict(hp=18,  speed=135, radius=10, color=(232, 224, 90), gold=6,  shoots=False),
     "tank":    dict(hp=160, speed=42,  radius=20, color=(150, 90, 200), gold=18, shoots=False),
-    "shooter": dict(hp=40,  speed=60,  radius=14, color=(80, 200, 220), gold=10, shoots=True),
+    "shooter": dict(hp=40,  speed=60,  radius=14, color=(255, 140, 50), gold=10, shoots=True),
 }
 
 # name: (cost, range, fire delay, damage, bullet speed, splash radius, color)
 TOWER_TYPES = {
     "gun":    dict(cost=50,  range=170, delay=0.35, damage=8,  speed=700, splash=0,  color=(90, 170, 255), key="1"),
-    "cannon": dict(cost=120, range=210, delay=1.4,  damage=40, speed=420, splash=60, color=(255, 140, 70), key="2"),
+    "cannon": dict(cost=120, range=210, delay=1.4,  damage=40, speed=420, splash=60, color=(255, 111, 176), key="2"),
 }
 TOWER_RADIUS = 18
 
@@ -80,19 +65,15 @@ TOWER_RADIUS = 18
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def dist_point_segment(p, a, b):
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    dx, dy = bx - ax, by - ay
-    if dx == 0 and dy == 0:
-        return math.hypot(px - ax, py - ay)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-
-
-def dist_to_path(p):
-    return min(dist_point_segment(p, PATH[i], PATH[i + 1]) for i in range(len(PATH) - 1))
+def edge_spawn(player_pos, min_dist=300):
+    """Random point just outside the screen edge, at least min_dist away from the player."""
+    for _ in range(20):
+        side = random.randrange(4)
+        x = -30 if side == 0 else WIDTH + 30 if side == 1 else random.uniform(0, WIDTH)
+        y = -30 if side == 2 else HEIGHT + 30 if side == 3 else random.uniform(0, HEIGHT)
+        if player_pos.distance_to((x, y)) >= min_dist:
+            break
+    return (x, y)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +138,7 @@ class Bullet:
 
 
 class Mob:
-    def __init__(self, kind, hp_mult):
+    def __init__(self, kind, hp_mult, pos):
         spec = MOB_TYPES[kind]
         self.kind = kind
         self.max_hp = spec["hp"] * hp_mult
@@ -167,32 +148,25 @@ class Mob:
         self.color = spec["color"]
         self.gold = spec["gold"]
         self.shoots = spec["shoots"]
-        self.pos = pygame.Vector2(PATH[0])
-        self.target_idx = 1
+        self.pos = pygame.Vector2(pos)
         self.alive = True
-        self.reached_base = False
         self.shoot_timer = random.uniform(1.0, 2.5)
         self.hit_flash = 0.0
-        self.progress = 0.0  # distance travelled, used by towers to pick the lead mob
+        self.orbit_dir = random.choice((-1, 1))
 
     def update(self, dt, player, bullets):
-        remaining = self.speed * dt
-        while remaining > 0 and self.target_idx < len(PATH):
-            target = pygame.Vector2(PATH[self.target_idx])
-            to_target = target - self.pos
-            d = to_target.length()
-            if d <= remaining:
-                self.pos = target
-                remaining -= d
-                self.progress += d
-                self.target_idx += 1
-            else:
-                self.pos += to_target / d * remaining
-                self.progress += remaining
-                remaining = 0
-        if self.target_idx >= len(PATH):
-            self.reached_base = True
-            self.alive = False
+        to_player = player.pos - self.pos
+        d = to_player.length() or 1.0
+        n = to_player / d
+        vel = n
+        if self.shoots:
+            # Close in until in range, back off if too close, otherwise circle the player.
+            on_screen = 20 < self.pos.x < WIDTH - 20 and 60 < self.pos.y < HEIGHT - 20
+            radial = 1 if (not on_screen or d > SHOOTER_MAX) else -1 if d < SHOOTER_MIN else 0
+            vel = n * radial + pygame.Vector2(-n.y, n.x) * self.orbit_dir * 0.8
+            if vel.length_squared() > 0:
+                vel = vel.normalize()
+        self.pos += vel * self.speed * dt
 
         if self.shoots:
             self.shoot_timer -= dt
@@ -236,7 +210,7 @@ class Tower:
         in_range = [m for m in mobs if m.pos.distance_to(self.pos) <= self.spec["range"]]
         if not in_range:
             return
-        target = max(in_range, key=lambda m: m.progress)
+        target = min(in_range, key=lambda m: m.pos.distance_to(self.pos))
         direction = target.pos - self.pos
         if direction.length_squared() == 0:
             return
@@ -300,14 +274,6 @@ class Game:
             pygame.draw.line(bg, GRID_COLOR, (x, 0), (x, HEIGHT))
         for y in range(0, HEIGHT, 40):
             pygame.draw.line(bg, GRID_COLOR, (0, y), (WIDTH, y))
-        for i in range(len(PATH) - 1):
-            pygame.draw.line(bg, PATH_EDGE, PATH[i], PATH[i + 1], PATH_WIDTH + 6)
-        for p in PATH:
-            pygame.draw.circle(bg, PATH_EDGE, p, (PATH_WIDTH + 6) // 2)
-        for i in range(len(PATH) - 1):
-            pygame.draw.line(bg, PATH_COLOR, PATH[i], PATH[i + 1], PATH_WIDTH)
-        for p in PATH:
-            pygame.draw.circle(bg, PATH_COLOR, p, PATH_WIDTH // 2)
         return bg
 
     def reset(self):
@@ -317,7 +283,6 @@ class Game:
         self.towers = []
         self.particles = []
         self.gold = START_GOLD
-        self.base_hp = BASE_MAX_HP
         self.wave = 0
         self.spawn_queue = []
         self.spawn_timer = 0.0
@@ -373,10 +338,6 @@ class Game:
     def can_place(self, pos):
         if self.selected_tower is None:
             return False
-        if dist_to_path(pos) < PATH_WIDTH / 2 + TOWER_RADIUS:
-            return False
-        if pygame.Vector2(pos).distance_to(BASE_POS) < BASE_RADIUS + TOWER_RADIUS + 10:
-            return False
         if not (TOWER_RADIUS < pos[0] < WIDTH - TOWER_RADIUS and 60 < pos[1] < HEIGHT - TOWER_RADIUS):
             return False
         return all(t.pos.distance_to(pos) >= TOWER_RADIUS * 2 + 4 for t in self.towers)
@@ -420,11 +381,12 @@ class Game:
         if self.spawn_queue:
             self.spawn_timer -= dt
             if self.spawn_timer <= 0:
-                self.mobs.append(Mob(self.spawn_queue.pop(), self.hp_mult))
+                self.mobs.append(Mob(self.spawn_queue.pop(), self.hp_mult, edge_spawn(self.player.pos)))
                 self.spawn_timer = self.spawn_interval
 
         for m in self.mobs:
             m.update(dt, self.player, self.bullets)
+        self.separate()
         for t in self.towers:
             t.update(dt, self.mobs, self.bullets)
         for b in self.bullets:
@@ -432,16 +394,22 @@ class Game:
 
         self.resolve_collisions()
 
-        for m in self.mobs:
-            if m.reached_base:
-                self.base_hp -= 2 if m.kind == "tank" else 1
-                self.burst(m.pos, (255, 80, 80), 14)
         self.mobs = [m for m in self.mobs if m.alive]
         self.bullets = [b for b in self.bullets if b.alive]
 
-        if self.base_hp <= 0:
-            self.base_hp = 0
-            self.end("The base was overrun")
+    def separate(self):
+        """Push overlapping mobs apart so a wave doesn't collapse into one blob."""
+        ms = self.mobs
+        for i in range(len(ms)):
+            for j in range(i + 1, len(ms)):
+                a, b = ms[i], ms[j]
+                delta = b.pos - a.pos
+                d = delta.length()
+                min_d = a.radius + b.radius
+                if 0 < d < min_d:
+                    push = delta / d * (min_d - d) / 2
+                    a.pos -= push
+                    b.pos += push
 
     def resolve_collisions(self):
         ppos = self.player.pos
@@ -491,12 +459,6 @@ class Game:
         s.blit(self.background, (0, 0))
         mouse = pygame.mouse.get_pos()
 
-        # base
-        pygame.draw.circle(s, (60, 110, 200), BASE_POS, BASE_RADIUS)
-        pygame.draw.circle(s, (170, 210, 255), BASE_POS, BASE_RADIUS, 3)
-        label = self.font.render("BASE", True, (230, 240, 255))
-        s.blit(label, label.get_rect(center=BASE_POS))
-
         for t in self.towers:
             t.draw(s, show_range=t.pos.distance_to(mouse) < TOWER_RADIUS)
         for m in self.mobs:
@@ -535,7 +497,6 @@ class Game:
             status = f"next wave in {max(0, self.break_timer):.0f}s  [Space]"
         parts = [
             (f"Wave {self.wave}", (230, 230, 230)),
-            (f"Base {self.base_hp}/{BASE_MAX_HP}", (255, 120, 120) if self.base_hp <= 5 else (140, 190, 255)),
             (f"Gold {self.gold}", (255, 215, 90)),
             (f"Kills {self.kills}", (200, 200, 200)),
             (status, (170, 170, 170)),
@@ -584,7 +545,7 @@ class Game:
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Tower Defense Shooter")
+    pygame.display.set_caption("Swarm Defense")
     pygame.mouse.set_visible(False)
     clock = pygame.time.Clock()
     game = Game(screen)

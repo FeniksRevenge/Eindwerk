@@ -1,7 +1,7 @@
-# Tower Defense Shooter
+# Swarm Defense
 
-Mobs walk the path toward your base. Shoot them yourself and build towers with the gold you earn.
-One hit kills you (touching a mob or a mob bullet). Game also ends if the base drops to 0 HP.
+Mobs come in from every side and run straight at you; orange shooters keep their distance and fire. Shoot them and build towers with the gold you earn.
+One hit kills you (touching a mob or a mob bullet).
 
 ## Run in the browser (no install)
 Double-click `tower_defense.html`.
@@ -27,5 +27,5 @@ python tower_defense.py
 ## Mobs
 - **Grunt** (red) - basic
 - **Runner** (yellow) - fast, from wave 2
-- **Shooter** (cyan) - shoots at you, from wave 3
-- **Tank** (purple) - lots of HP, costs the base 2 HP, from wave 4
+- **Shooter** (orange) - keeps its distance, circles you and shoots, from wave 3
+- **Tank** (purple) - lots of HP, from wave 4
