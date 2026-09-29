@@ -55,6 +55,11 @@ Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
    splits into, the **red cross** (boss) and a **green health circle**.
 
 The bot walks over green health circles when it's safe to, and dodges both red and orange bullets.
+It still finds you behind the see-through **health bar** and **score** panels, and when it briefly can't see
+you at all (behind a mob) it keeps playing from where you should be for up to 1.5 seconds.
+
+The bot always looks at your **whole main screen**, also with Windows display scaling (125%, 150%, ...).
+The log shows the screen size it uses when the app starts.
 
 **Click on the solid, colored middle of each thing** (not a thin ring or outline). Clicks on the background
 are refused. **Close Roblox chat** (chat icon, top left) before botting: its emoji icons look like bullets.

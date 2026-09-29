@@ -83,20 +83,33 @@ class BotRunner:
         dets = self.detector.detect(frame)
         found = self._pick_player(dets["player"], now)
         self.last = {"frame": frame, "dets": dets, "player": found, "keys": self.last_keys, "aim": None, "fire": False}
+        estimated = False
         if found is None:
             self.missing_time += dt
             if self.seen_player and self.missing_time > self.death_timeout:
                 self.release()
                 return "dead"
-            return "waiting" if not self.seen_player else "ok"
-        self.missing_time = 0.0
-        self.seen_player = True
-        if self.first_seen is None:
-            self.first_seen = now
-        self.last_seen = now
+            if self.player is None or self.missing_time > 1.5:
+                return "waiting" if not self.seen_player else "ok"
+            # Can't see the player right now (behind a mob or a HUD panel): keep playing from where
+            # it should be, based on the keys being held, instead of freezing.
+            px, py, pr = self.player
+            dx = ("d" in self.last_keys) - ("a" in self.last_keys)
+            dy = ("s" in self.last_keys) - ("w" in self.last_keys)
+            norm = math.hypot(dx, dy) or 1.0
+            spd = self.player_speed or DEFAULT_PLAYER_SPEED * pr / REF_R
+            found = (min(max(px + dx / norm * spd * dt, pr), w - pr), min(max(py + dy / norm * spd * dt, pr), h - pr), pr)
+            self.last["player"] = found
+            estimated = True
+        else:
+            self.missing_time = 0.0
+            self.seen_player = True
+            if self.first_seen is None:
+                self.first_seen = now
+            self.last_seen = now
         x, y, r = found
 
-        if self.player is not None and self.last_keys:
+        if self.player is not None and self.last_keys and not estimated:
             moved = math.hypot(x - self.player[0], y - self.player[1]) / dt
             # Measure the player's real speed from how far it moved while a direction was held.
             diag = len(self.last_keys) == 2

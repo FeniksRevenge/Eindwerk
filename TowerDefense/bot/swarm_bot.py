@@ -11,6 +11,7 @@ It only sends input while the Roblox window is in front.
 """
 
 import ctypes
+import dpi  # noqa: F401  (first: real screen pixels with display scaling)
 import json
 import os
 import sys
@@ -32,14 +33,8 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 SHOTS_DIR = os.path.join(HERE, "screenshots")
 CONFIG_LOCK = threading.RLock()  # the bot thread and the app both write config.json
 
-# Make screen coordinates real pixels even with Windows display scaling (125%, 150%...).
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+# Screen coordinates are real pixels even with Windows display scaling (125%, 150%...).
+from dpi import primary_screen_pixels  # noqa: E402  (importing dpi switches the process to real pixels)
 
 
 # --------------------------------------------------------------------------- Windows input
@@ -160,7 +155,12 @@ def main_monitor():
     with mss.mss() as sct:
         mons = sct.monitors[1:] or sct.monitors
         mon = next((m for m in mons if m["left"] == 0 and m["top"] == 0), mons[0])
-    return {"left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]}
+    region = {"left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]}
+    real = primary_screen_pixels()
+    if real and (region["width"], region["height"]) != real:
+        # Display scaling fooled the monitor list: trust the real resolution.
+        region = {"left": 0, "top": 0, "width": real[0], "height": real[1]}
+    return region
 
 
 def use_main_screen(cfg):

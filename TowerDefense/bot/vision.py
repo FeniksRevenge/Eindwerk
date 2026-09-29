@@ -46,6 +46,8 @@ PRESET = {
         "tank_mini": {"lab": [183, 171, 85], "radius": 29.5},
         "boss": {"lab": [131, 191, 167], "radius": 128.0},
         "health": {"lab": [217, 64, 174], "radius": 9.0},
+        "runner": {"lab": [229, 123, 199], "radius": 33.5},       # yellow mob (shoots in all directions)
+        "yellow_bullet": {"lab": [229, 123, 199], "radius": 12.8},
     },
 }
 
@@ -61,6 +63,23 @@ def color_mask(lab_img, lab, tol):
     lo = np.clip(lab - tol, 0, 255).astype(np.uint8)
     hi = np.clip(lab + tol, 0, 255).astype(np.uint8)
     return cv2.inRange(lab_img, lo, hi)
+
+
+# The see-through panels the player can move behind: the health bar (dark red) and the score
+# panel (dark gray), as BGR colors. Behind them the player's gray gets blended with these.
+HUD_PANELS_BGR = [(20, 18, 16), (22, 18, 48)]
+PANEL_STRENGTHS = [0.3, 0.5, 0.7, 0.85]
+
+
+def shaded_player_colors(lab):
+    """The player's color as it looks behind each HUD panel, at a few see-through strengths."""
+    bgr = cv2.cvtColor(np.uint8([[lab]]), cv2.COLOR_LAB2BGR)[0, 0].astype(np.float64)
+    out = []
+    for panel in HUD_PANELS_BGR:
+        for a in PANEL_STRENGTHS:
+            mix = np.clip(bgr * (1 - a) + np.array(panel) * a, 0, 255).astype(np.uint8)
+            out.append(bgr_to_lab_pixel(mix))
+    return out
 
 
 def background_lab(bgr_img):
@@ -127,14 +146,16 @@ class Detector:
             else:
                 self.groups.append(([c["lab"]], [(name, float(c["radius"]))]))
 
-    def blobs(self, lab_img, labs, min_fill=0.3):
+    def blobs(self, lab_img, labs, min_fill=0.3, tol=None, min_r=0.0):
         """(x, y, radius, mean_lab) of every roughly solid blob of these colors, in downscaled pixels."""
-        mask = color_mask(lab_img, labs[0], self.tol)
+        tol = self.tol if tol is None else tol
+        mask = color_mask(lab_img, labs[0], tol)
         for lab in labs[1:]:
-            mask |= color_mask(lab_img, lab, self.tol)
+            mask |= color_mask(lab_img, lab, tol)
         n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
         out = []
-        for i in range(1, n):
+        big = np.nonzero(np.maximum(stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT]) >= 2 * min_r)[0] + 1
+        for i in big:  # tiny specks are skipped before any per-blob work
             bx, by = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
             bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
             area = stats[i, cv2.CC_STAT_AREA]
@@ -165,7 +186,16 @@ class Detector:
         for labs, members in self.groups:
             # Health pickups may be drawn as a ring, so allow hollow shapes for them.
             min_fill = 0.08 if any(m[0] == "health" for m in members) else 0.3
-            for (x, y, r, lab) in self.blobs(lab_img, labs, min_fill):
+            smallest = min(m[1] for m in members)
+            blobs = self.blobs(lab_img, labs, min_fill, min_r=smallest * 0.45 / s)
+            if len(members) == 1 and members[0][0] == "player":
+                # Also look for the player behind the see-through health bar / score panel. Each shade
+                # is checked on its own, so the (equally darkened) white shield doesn't merge with it.
+                for shade in shaded_player_colors(labs[0]):
+                    for b in self.blobs(lab_img, [shade], min_fill, tol=[16, 9, 9], min_r=smallest * 0.6 / s):
+                        if not any(abs(b[0] - o[0]) < 4 and abs(b[1] - o[1]) < 4 for o in blobs):
+                            blobs.append(b)
+            for (x, y, r, lab) in blobs:
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
                 cls, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))

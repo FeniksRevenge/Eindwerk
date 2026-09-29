@@ -5,6 +5,7 @@ Start it with start_app.bat (or: pyw gui.py). The * and - hotkeys keep working w
 you're in Roblox; the buttons here do the same thing.
 """
 
+import dpi  # noqa: F401  (must come first: real screen pixels with display scaling)
 import json
 import os
 import queue
@@ -205,6 +206,15 @@ class App:
             load_config()  # keeps the play area equal to the whole main screen
         except FileNotFoundError:
             pass
+        try:
+            from dpi import primary_screen_pixels
+            from swarm_bot import main_monitor
+            m, real = main_monitor(), primary_screen_pixels()
+            self.write_log(f"Main screen: {m['width']}x{m['height']}" +
+                           (f" (display resolution {real[0]}x{real[1]})" if real else "") +
+                           ". The bot looks at all of it.")
+        except Exception as e:
+            self.write_log(f"Couldn't read the screen size: {e}")
         self.refresh_calibration()
         self.refresh_photos()
         cfg_now = read_config() or {}
