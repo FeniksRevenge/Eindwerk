@@ -30,19 +30,22 @@
   "use strict";
 
   // ---------------------------------------------------------------- config
-  const W = 1280, H = 720;
+  const W = 1280, H = 720, HUD_H = 44;
   const PLAYER_RADIUS = 13, PLAYER_SPEED = 260, PLAYER_FIRE_DELAY = 0.11;
   const BULLET_SPEED = 820, BULLET_DAMAGE = 10;
   const START_GOLD = 100, WAVE_BREAK = 8;
   const TOWER_RADIUS = 18;
-  // Shooters stop at this distance band from the player and circle around instead of charging.
-  const SHOOTER_MIN = 260, SHOOTER_MAX = 380;
+  const BOSS_EVERY = 5;
+  // Shooters try to stay inside this distance band: they run away when you get closer than
+  // SHOOTER_MIN and only come closer when you're further than SHOOTER_MAX.
+  const SHOOTER_MIN = 300, SHOOTER_MAX = 440;
 
   const MOB_TYPES = {
-    grunt:   { hp: 30,  speed: 70,  radius: 13, color: "#dc5050", gold: 5,  shoots: false },
-    runner:  { hp: 18,  speed: 135, radius: 10, color: "#e8e05a", gold: 6,  shoots: false },
-    tank:    { hp: 160, speed: 42,  radius: 20, color: "#965ac8", gold: 18, shoots: false },
-    shooter: { hp: 40,  speed: 60,  radius: 14, color: "#ff8c32", gold: 10, shoots: true  },
+    grunt:   { hp: 30,   speed: 70,  radius: 13, color: "#dc5050", gold: 5 },
+    runner:  { hp: 18,   speed: 135, radius: 10, color: "#e8e05a", gold: 6 },
+    tank:    { hp: 160,  speed: 42,  radius: 20, color: "#965ac8", gold: 18 },
+    shooter: { hp: 40,   speed: 105, radius: 14, color: "#ff8c32", gold: 10 },
+    boss:    { hp: 1200, speed: 48,  radius: 40, color: "#c0283c", gold: 150 },
   };
   const TOWER_TYPES = {
     gun:    { cost: 50,  range: 170, delay: 0.35, damage: 8,  speed: 700, splash: 0,  color: "#5aaaff", key: "1", name: "Gun" },
@@ -51,17 +54,19 @@
 
   // ---------------------------------------------------------------- helpers
   const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
   // Random point just outside the screen edge, at least `minDist` away from (px, py).
   function edgeSpawn(px, py, minDist = 300) {
     for (let i = 0; ; i++) {
       const side = Math.floor(Math.random() * 4);
       const x = side === 0 ? -30 : side === 1 ? W + 30 : rand(0, W);
-      const y = side === 2 ? -30 : side === 3 ? H + 30 : rand(0, H);
+      const y = side === 2 ? -30 : side === 3 ? H + 30 : rand(HUD_H, H);
       if (dist(x, y, px, py) >= minDist || i > 20) return [x, y];
     }
   }
   const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const onScreen = (x, y, margin = 0) => x > margin && x < W - margin && y > HUD_H + margin && y < H - margin;
 
   // ---------------------------------------------------------------- canvas + input
   const canvas = document.getElementById("game");
@@ -94,7 +99,10 @@
   });
   window.addEventListener("mouseup", e => { if (e.button === 0) mouse.down = false; });
   canvas.addEventListener("contextmenu", e => e.preventDefault());
-  window.addEventListener("blur", () => { keys.clear(); mouse.down = false; if (game.started && !game.over) game.paused = true; });
+  window.addEventListener("blur", () => {
+    keys.clear(); mouse.down = false;
+    if (game.started && !game.over && !bot.on) game.paused = true;
+  });
 
   window.addEventListener("keydown", e => {
     const k = e.key.toLowerCase();
@@ -112,53 +120,96 @@
     }
     update(dt) {
       this.x += this.vx * dt; this.y += this.vy * dt;
-      if (this.x < -20 || this.x > W + 20 || this.y < -20 || this.y > H + 20) this.alive = false;
+      if (this.x < -60 || this.x > W + 60 || this.y < -60 || this.y > H + 60) this.alive = false;
     }
     draw() { circle(this.x, this.y, this.radius, this.color); }
   }
 
+  const enemyShot = (x, y, angle, speed, radius = 6, color = "#ff5a78") =>
+    new Bullet(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, 1, color, false, 0, radius);
+
   class Mob {
     constructor(kind, hpMult, x, y) {
       const s = MOB_TYPES[kind];
-      Object.assign(this, { kind, speed: s.speed, radius: s.radius, color: s.color, gold: s.gold, shoots: s.shoots });
+      Object.assign(this, { kind, speed: s.speed, radius: s.radius, color: s.color, gold: s.gold });
       this.maxHp = this.hp = s.hp * hpMult;
-      this.x = x; this.y = y; this.alive = true;
+      this.x = x; this.y = y; this.vx = 0; this.vy = 0; this.alive = true;
+      this.entered = false;
       this.shootTimer = rand(1, 2.5); this.flash = 0;
+      this.ringTimer = 3; this.burstTimer = 1.5; this.ringOffset = 0;
       this.orbitDir = Math.random() < 0.5 ? 1 : -1;
     }
+
     update(dt, player, bullets) {
-      const d0 = dist(player.x, player.y, this.x, this.y) || 1;
-      const nx0 = (player.x - this.x) / d0, ny0 = (player.y - this.y) / d0;
-      let vx = nx0, vy = ny0;
-      if (this.shoots) {
-        // Close in until in range, back off if too close, otherwise circle the player.
-        const onScreen = this.x > 20 && this.x < W - 20 && this.y > 60 && this.y < H - 20;
-        const radial = !onScreen || d0 > SHOOTER_MAX ? 1 : d0 < SHOOTER_MIN ? -1 : 0;
-        vx = nx0 * radial - ny0 * this.orbitDir * 0.8;
-        vy = ny0 * radial + nx0 * this.orbitDir * 0.8;
+      const d = dist(player.x, player.y, this.x, this.y) || 1;
+      const nx = (player.x - this.x) / d, ny = (player.y - this.y) / d;
+      let vx = nx, vy = ny;
+
+      if (this.kind === "shooter") {
+        // Run away when you get close, circle at range, only approach when far away.
+        let radial, orbit;
+        if (!this.entered || d > SHOOTER_MAX) { radial = 1; orbit = 0.5; }
+        else if (d < SHOOTER_MIN) { radial = -1; orbit = 0.35; }
+        else { radial = 0; orbit = 0.8; }
+        vx = nx * radial - ny * this.orbitDir * orbit;
+        vy = ny * radial + nx * this.orbitDir * orbit;
+        if (this.entered) {
+          // Steer off the walls so it doesn't get pinned in a corner while fleeing.
+          const m = 90;
+          if (this.x < m) vx += (m - this.x) / m * 1.5;
+          if (this.x > W - m) vx -= (this.x - (W - m)) / m * 1.5;
+          if (this.y < HUD_H + m) vy += (HUD_H + m - this.y) / m * 1.5;
+          if (this.y > H - m) vy -= (this.y - (H - m)) / m * 1.5;
+          // Flip orbit direction when stuck on a wall so it slides away instead of grinding.
+          if (!onScreen(this.x, this.y, this.radius + 4) && d < SHOOTER_MIN) this.orbitDir *= -1;
+        }
         const l = Math.hypot(vx, vy) || 1;
         vx /= l; vy /= l;
       }
-      this.x += vx * this.speed * dt;
-      this.y += vy * this.speed * dt;
 
-      if (this.shoots) {
+      this.vx = vx * this.speed; this.vy = vy * this.speed;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      if (onScreen(this.x, this.y, this.radius)) this.entered = true;
+      if (this.entered && this.kind === "shooter") {
+        this.x = clamp(this.x, this.radius, W - this.radius);
+        this.y = clamp(this.y, HUD_H + this.radius, H - this.radius);
+      }
+
+      if (this.kind === "shooter") {
         this.shootTimer -= dt;
         if (this.shootTimer <= 0) {
           this.shootTimer = rand(1.6, 2.6);
-          const d = dist(player.x, player.y, this.x, this.y);
-          if (d > 0 && d < 450) {
-            const nx = (player.x - this.x) / d, ny = (player.y - this.y) / d;
-            bullets.push(new Bullet(this.x + nx * this.radius, this.y + ny * this.radius, nx * 260, ny * 260, 1, "#ff5a78", false, 0, 6));
-          }
+          if (this.entered && d < 520) bullets.push(enemyShot(this.x + nx * this.radius, this.y + ny * this.radius, Math.atan2(ny, nx), 260));
+        }
+      } else if (this.kind === "boss" && this.entered) {
+        // Ring of bullets on a timer, plus an aimed three-shot spread.
+        this.ringTimer -= dt;
+        if (this.ringTimer <= 0) {
+          this.ringTimer = 2.8;
+          this.ringOffset += 0.17;
+          const n = 18;
+          for (let i = 0; i < n; i++) bullets.push(enemyShot(this.x, this.y, this.ringOffset + i * Math.PI * 2 / n, 175, 7, "#ff3c5a"));
+        }
+        this.burstTimer -= dt;
+        if (this.burstTimer <= 0) {
+          this.burstTimer = 1.7;
+          const a = Math.atan2(ny, nx);
+          for (const off of [-0.22, 0, 0.22]) bullets.push(enemyShot(this.x + nx * this.radius, this.y + ny * this.radius, a + off, 270, 7, "#ff3c5a"));
         }
       }
       this.flash = Math.max(0, this.flash - dt);
     }
+
     hit(amount) { this.hp -= amount; this.flash = 0.08; if (this.hp <= 0) this.alive = false; }
+
     draw() {
       circle(this.x, this.y, this.radius, this.flash > 0 ? "#fff" : this.color);
       ring(this.x, this.y, this.radius, "#141414", 2);
+      if (this.kind === "boss") {
+        ring(this.x, this.y, this.radius - 10, "rgba(255,255,255,0.35)", 3);
+        return; // boss HP is drawn in the HUD
+      }
       if (this.hp < this.maxHp) {
         const w = this.radius * 2, x = this.x - this.radius, y = this.y - this.radius - 8;
         ctx.fillStyle = "#3c1414"; ctx.fillRect(x, y, w, 4);
@@ -173,7 +224,7 @@
       this.cooldown = Math.max(0, this.cooldown - dt);
       let target = null;
       let best = this.spec.range;
-      for (const m of mobs) { const d = dist(m.x, m.y, this.x, this.y); if (d <= best) { best = d; target = m; } }
+      for (const m of mobs) { const d = dist(m.x, m.y, this.x, this.y) - m.radius; if (d <= best) { best = d; target = m; } }
       if (!target) return;
       const d = dist(target.x, target.y, this.x, this.y);
       if (!d) return;
@@ -202,6 +253,124 @@
     update(dt) { this.x += this.vx * dt; this.y += this.vy * dt; this.vx *= 0.9; this.vy *= 0.9; this.life -= dt; }
     draw() { if (this.life > 0) circle(this.x, this.y, Math.max(1, this.life * 8), this.color); }
   }
+
+  // ---------------------------------------------------------------- bot
+  // Autopilot. It only moves and shoots, it never builds towers. Each frame it tries 24 movement
+  // directions (plus standing still), simulates where the player, the enemy bullets and the mobs
+  // will be over the next ~0.7s, and picks the direction with the most clearance. It aims at the
+  // most urgent mob and leads the shot so the bullet meets it.
+  const bot = {
+    on: false,
+    prevX: 0, prevY: 0,
+    restartTimer: 0,
+    ORBIT_A: 420, ORBIT_B: 220, // semi-axes of the loop it runs around the arena
+    ORBIT_WEIGHT: 150,
+    WALL_MARGIN: 140, WALL_WEIGHT: 0.35, CROWD_WEIGHT: 2500, MOB_MARGIN: 60,
+    orbitDir: 1,
+    DIRS: [[0, 0], ...Array.from({ length: 24 }, (_, i) => [Math.cos(i * Math.PI / 12), Math.sin(i * Math.PI / 12)])],
+    DIRS2: [[0, 0], ...Array.from({ length: 12 }, (_, i) => [Math.cos(i * Math.PI / 6), Math.sin(i * Math.PI / 6)])],
+
+    // Returns { mx, my, aimX, aimY, fire }.
+    think(g) {
+      const p = g.player;
+      const enemyBullets = g.bullets.filter(b => !b.friendly && dist(b.x, b.y, p.x, p.y) < 420);
+      const mobs = g.mobs.filter(m => dist(m.x, m.y, p.x, p.y) < 700);
+
+      // Preferred heading: run laps around an ellipse in the middle of the arena. Chasers are
+      // slower than the player, so they end up trailing behind instead of boxing it into a corner.
+      const cx = W / 2, cy = (H + HUD_H) / 2;
+      const u = (p.x - cx) / this.ORBIT_A, v = (p.y - cy) / this.ORBIT_B;
+      const rho = Math.hypot(u, v) || 1e-6;
+      let prefX = -v / rho * this.ORBIT_A * this.orbitDir + u / rho * (1 - rho) * 700;
+      let prefY = u / rho * this.ORBIT_B * this.orbitDir + v / rho * (1 - rho) * 700;
+      const pl = Math.hypot(prefX, prefY) || 1;
+      prefX /= pl; prefY /= pl;
+
+      // Danger along a straight run from (sx, sy) in direction (dx, dy), starting `t0` seconds
+      // into the future. Chasers are predicted to head for wherever the player will be.
+      const leg = (sx, sy, dx, dy, t0, steps, stepDt) => {
+        let cost = 0, px = sx, py = sy;
+        for (let i = 1; i <= steps; i++) {
+          const t = i * stepDt, T = t0 + t;
+          px = clamp(sx + dx * PLAYER_SPEED * t, PLAYER_RADIUS, W - PLAYER_RADIUS);
+          py = clamp(sy + dy * PLAYER_SPEED * t, PLAYER_RADIUS, H - PLAYER_RADIUS);
+          const urgency = Math.max(0.3, 1.4 - T); // near-future danger matters more
+          for (const b of enemyBullets) {
+            const gap = dist(b.x + b.vx * T, b.y + b.vy * T, px, py) - PLAYER_RADIUS - b.radius;
+            if (gap < 0) cost += 20000 * urgency;
+            else if (gap < 22) cost += (22 - gap) * (22 - gap) * 4 * urgency;
+          }
+          for (const m of mobs) {
+            let mx = m.x, my = m.y;
+            if (m.kind !== "shooter") {
+              const md = dist(px, py, m.x, m.y) || 1;
+              const step = Math.min(md, m.speed * T);
+              mx += (px - m.x) / md * step; my += (py - m.y) / md * step;
+            } else { mx += m.vx * T; my += m.vy * T; }
+            const gap = dist(mx, my, px, py) - PLAYER_RADIUS - m.radius;
+            if (gap < 0) cost += 20000 * urgency;
+            else if (gap < this.MOB_MARGIN) cost += (this.MOB_MARGIN - gap) ** 2 * 1.5 * urgency;
+          }
+        }
+        return [cost, px, py];
+      };
+      // How bad a spot is to end up in: close to the crowd, or near a wall/corner.
+      const spot = (px, py) => {
+        let cost = 0;
+        for (const m of mobs) {
+          const gap = Math.max(1, dist(m.x, m.y, px, py) - m.radius);
+          cost += (m.kind === "boss" ? 3.6 : 1) * this.CROWD_WEIGHT / (gap + 20);
+        }
+        const wallGap = Math.min(px, W - px, py - HUD_H, H - py);
+        if (wallGap < this.WALL_MARGIN) cost += (this.WALL_MARGIN - wallGap) ** 2 * this.WALL_WEIGHT;
+        return cost;
+      };
+
+      // Two-step lookahead: every first move is scored together with its best follow-up move,
+      // so the bot doesn't step into a pocket it can't get out of.
+      let best = null, bestCost = Infinity;
+      for (const [dx, dy] of this.DIRS) {
+        const [c1, x1, y1] = leg(p.x, p.y, dx, dy, 0, 10, 0.04);
+        let follow = Infinity;
+        if (c1 < bestCost) {
+          for (const [ex, ey] of this.DIRS2) {
+            const [c2, x2, y2] = leg(x1, y1, ex, ey, 0.4, 8, 0.05);
+            follow = Math.min(follow, c2 * 0.7 + spot(x2, y2));
+          }
+        }
+        let cost = c1 + follow;
+        cost += (1 - (dx * prefX + dy * prefY)) * this.ORBIT_WEIGHT;
+        // Small preference for keeping the current heading, so it doesn't jitter.
+        if (dx || dy) cost += (1 - (dx * this.prevX + dy * this.prevY)) * 12;
+        if (cost < bestCost) { bestCost = cost; best = [dx, dy]; }
+      }
+      this.prevX = best[0]; this.prevY = best[1];
+
+      // Target: the mob that would reach the player soonest; shooters count as fairly urgent
+      // because they're the only thing that shoots back, bosses less (they're slow and tanky).
+      let target = null, bestScore = Infinity;
+      for (const m of g.mobs) {
+        if (!onScreen(m.x, m.y, -m.radius)) continue;
+        const gap = dist(m.x, m.y, p.x, p.y) - m.radius;
+        let score = gap / (m.kind === "shooter" ? 150 : m.speed);
+        if (m.kind === "shooter") score *= 0.5;
+        if (m.kind === "boss") score = gap / 80 + 1;
+        if (score < bestScore) { bestScore = score; target = m; }
+      }
+      let aimX = p.x + p.ax * 100, aimY = p.y + p.ay * 100;
+      if (target) {
+        // Lead the target: aim where it will be when the bullet arrives.
+        let tx = target.x, ty = target.y;
+        for (let i = 0; i < 3; i++) {
+          const tt = dist(tx, ty, p.x, p.y) / BULLET_SPEED;
+          tx = target.x + target.vx * tt; ty = target.y + target.vy * tt;
+        }
+        aimX = tx; aimY = ty;
+      }
+      return { mx: best[0], my: best[1], aimX, aimY, fire: !!target };
+    },
+
+  };
 
   // ---------------------------------------------------------------- draw primitives
   function circle(x, y, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
@@ -232,32 +401,48 @@
   // ---------------------------------------------------------------- game
   const game = {
     reset() {
-      this.player = { x: W / 2, y: H / 2 + 180, cooldown: 0, ax: 1, ay: 0 };
+      this.player = { x: W / 2, y: H / 2 + 180, cooldown: 0, ax: 1, ay: 0, aimX: W / 2, aimY: H / 2 };
       this.mobs = []; this.bullets = []; this.towers = []; this.particles = [];
       this.gold = START_GOLD; this.wave = 0;
       this.spawnQueue = []; this.spawnTimer = 0; this.spawnInterval = 1; this.hpMult = 1;
       this.breakTimer = 4; this.kills = 0; this.selected = null;
       this.over = false; this.deathReason = ""; this.paused = false;
       this.message = ""; this.messageTimer = 0;
+      bot.restartTimer = 0;
     },
     started: false,
 
+    isBossWave(w) { return w % BOSS_EVERY === 0; },
+    boss() { return this.mobs.find(m => m.kind === "boss"); },
+
     startNextWave() {
       const w = ++this.wave;
-      const q = Array(6 + w * 2).fill("grunt");
-      if (w >= 2) q.push(...Array(w * 2).fill("runner"));
-      if (w >= 3) q.push(...Array(w - 1).fill("shooter"));
-      if (w >= 4) q.push(...Array(Math.floor(w / 2)).fill("tank"));
-      this.spawnQueue = shuffle(q);
+      const bossWave = this.isBossWave(w);
+      // Boss waves bring fewer regular mobs so the fight is about the boss.
+      const scale = bossWave ? 0.5 : 1;
+      const count = n => Math.round(n * scale);
+      const q = Array(count(6 + w * 2)).fill("grunt");
+      if (w >= 2) q.push(...Array(count(w * 2)).fill("runner"));
+      if (w >= 3) q.push(...Array(count(w - 1)).fill("shooter"));
+      if (w >= 4) q.push(...Array(count(Math.floor(w / 2))).fill("tank"));
+      shuffle(q);
+      if (bossWave) q.push("boss"); // popped from the end, so the boss comes first
+      this.spawnQueue = q;
       this.spawnInterval = Math.max(0.25, 0.9 - w * 0.05);
       this.spawnTimer = 0;
       this.hpMult = 1 + (w - 1) * 0.15;
-      this.flash(`Wave ${w}`);
+      this.flash(bossWave ? `Wave ${w}: BOSS` : `Wave ${w}`);
     },
     waveActive() { return this.spawnQueue.length > 0 || this.mobs.length > 0; },
     flash(msg) { this.message = msg; this.messageTimer = 1.8; },
 
     onKey(k) {
+      if (k === "b") {
+        bot.on = !bot.on;
+        this.started = true;
+        this.paused = false;
+        return this.flash(bot.on ? "Bot on" : "Bot off");
+      }
       if (!this.started) { this.started = true; return; }
       if ((k === "p" || k === "escape") && !this.over) this.paused = !this.paused;
       else if (k === "r" && this.over) this.reset();
@@ -269,8 +454,7 @@
     },
 
     canPlace(x, y) {
-      if (!this.selected) return false;
-      if (!(x > TOWER_RADIUS && x < W - TOWER_RADIUS && y > 60 && y < H - TOWER_RADIUS)) return false;
+      if (!(x > TOWER_RADIUS && x < W - TOWER_RADIUS && y > HUD_H + TOWER_RADIUS && y < H - TOWER_RADIUS)) return false;
       return this.towers.every(t => dist(t.x, t.y, x, y) >= TOWER_RADIUS * 2 + 4);
     },
     tryPlaceTower(x, y) {
@@ -286,22 +470,36 @@
       this.messageTimer = Math.max(0, this.messageTimer - dt);
       this.particles.forEach(p => p.update(dt));
       this.particles = this.particles.filter(p => p.life > 0);
+      if (this.over && bot.on) {
+        bot.restartTimer += dt;
+        if (bot.restartTimer > 4) this.reset();
+      }
       if (!this.started || this.over || this.paused) return;
 
-      // player
+      // player: input from the keyboard/mouse, or from the bot
       const p = this.player;
-      let mx = (keys.has("d") || keys.has("arrowright")) - (keys.has("a") || keys.has("arrowleft"));
-      let my = (keys.has("s") || keys.has("arrowdown")) - (keys.has("w") || keys.has("arrowup"));
+      let mx, my, fire;
+      if (bot.on) {
+        const c = bot.think(this);
+        mx = c.mx; my = c.my; fire = c.fire;
+        p.aimX = c.aimX; p.aimY = c.aimY;
+        if (!this.waveActive()) this.breakTimer = Math.min(this.breakTimer, 2);
+      } else {
+        mx = (keys.has("d") || keys.has("arrowright")) - (keys.has("a") || keys.has("arrowleft"));
+        my = (keys.has("s") || keys.has("arrowdown")) - (keys.has("w") || keys.has("arrowup"));
+        fire = mouse.down;
+        p.aimX = mouse.x; p.aimY = mouse.y;
+      }
       const ml = Math.hypot(mx, my);
       if (ml) { mx /= ml; my /= ml; }
-      p.x = Math.max(PLAYER_RADIUS, Math.min(W - PLAYER_RADIUS, p.x + mx * PLAYER_SPEED * dt));
-      p.y = Math.max(PLAYER_RADIUS, Math.min(H - PLAYER_RADIUS, p.y + my * PLAYER_SPEED * dt));
-      const ad = dist(mouse.x, mouse.y, p.x, p.y);
-      if (ad > 1) { p.ax = (mouse.x - p.x) / ad; p.ay = (mouse.y - p.y) / ad; }
+      p.x = clamp(p.x + mx * PLAYER_SPEED * dt, PLAYER_RADIUS, W - PLAYER_RADIUS);
+      p.y = clamp(p.y + my * PLAYER_SPEED * dt, PLAYER_RADIUS, H - PLAYER_RADIUS);
+      const ad = dist(p.aimX, p.aimY, p.x, p.y);
+      if (ad > 1) { p.ax = (p.aimX - p.x) / ad; p.ay = (p.aimY - p.y) / ad; }
       p.cooldown = Math.max(0, p.cooldown - dt);
-      if (mouse.down && p.cooldown === 0) {
+      if (fire && p.cooldown === 0) {
         p.cooldown = PLAYER_FIRE_DELAY;
-        const a = Math.atan2(p.ay, p.ax) + rand(-0.04, 0.04);
+        const a = Math.atan2(p.ay, p.ax) + (bot.on ? 0 : rand(-0.04, 0.04));
         this.bullets.push(new Bullet(p.x + p.ax * (PLAYER_RADIUS + 6), p.y + p.ay * (PLAYER_RADIUS + 6),
           Math.cos(a) * BULLET_SPEED, Math.sin(a) * BULLET_SPEED, BULLET_DAMAGE, "#fff5aa", true));
       }
@@ -314,9 +512,12 @@
       if (this.spawnQueue.length) {
         this.spawnTimer -= dt;
         if (this.spawnTimer <= 0) {
-          const [sx, sy] = edgeSpawn(p.x, p.y);
-          this.mobs.push(new Mob(this.spawnQueue.pop(), this.hpMult, sx, sy));
-          this.spawnTimer = this.spawnInterval;
+          const kind = this.spawnQueue.pop();
+          const [sx, sy] = edgeSpawn(p.x, p.y, kind === "boss" ? 500 : 300);
+          // Each boss is tougher than the one before.
+          const mult = kind === "boss" ? this.hpMult * (1 + 0.5 * (this.wave / BOSS_EVERY - 1)) : this.hpMult;
+          this.mobs.push(new Mob(kind, mult, sx, sy));
+          this.spawnTimer = kind === "boss" ? 2.5 : this.spawnInterval;
         }
       }
 
@@ -330,15 +531,16 @@
       this.bullets = this.bullets.filter(b => b.alive);
     },
 
-    // Push overlapping mobs apart so a wave doesn't collapse into one blob.
+    // Push overlapping mobs apart so a wave doesn't collapse into one blob. Big mobs barely move.
     separate() {
       const ms = this.mobs;
       for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) {
         const a = ms[i], b = ms[j], min = a.radius + b.radius;
         const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
         if (d > 0 && d < min) {
-          const push = (min - d) / 2, ux = dx / d, uy = dy / d;
-          a.x -= ux * push; a.y -= uy * push; b.x += ux * push; b.y += uy * push;
+          const over = min - d, ux = dx / d, uy = dy / d;
+          const wa = b.radius / min, wb = a.radius / min;
+          a.x -= ux * over * wa; a.y -= uy * over * wa; b.x += ux * over * wb; b.y += uy * over * wb;
         }
       }
     },
@@ -362,8 +564,16 @@
       for (const m of this.mobs) if (m.alive && dist(m.x, m.y, p.x, p.y) <= m.radius + PLAYER_RADIUS) return this.end(`A ${m.kind} got you`);
     },
     hitMob(m, dmg) {
+      if (!m.alive) return;
       m.hit(dmg);
-      if (!m.alive) { this.gold += m.gold; this.kills++; this.burst(m.x, m.y, m.color, 10); }
+      if (!m.alive) {
+        this.gold += m.gold; this.kills++;
+        this.burst(m.x, m.y, m.color, m.kind === "boss" ? 60 : 10);
+        if (m.kind === "boss") {
+          this.flash(`Boss down  +${m.gold}g`);
+          this.bullets = this.bullets.filter(b => b.friendly); // clear its bullets
+        }
+      }
     },
     burst(x, y, color, n) { for (let i = 0; i < n; i++) this.particles.push(new Particle(x, y, color)); },
     end(reason) {
@@ -374,7 +584,8 @@
 
     draw() {
       ctx.drawImage(bg, 0, 0);
-      this.towers.forEach(t => t.draw(dist(t.x, t.y, mouse.x, mouse.y) < TOWER_RADIUS));
+      const showRangeAt = bot.on ? null : mouse;
+      this.towers.forEach(t => t.draw(showRangeAt && dist(t.x, t.y, mouse.x, mouse.y) < TOWER_RADIUS));
       this.mobs.forEach(m => m.draw());
       this.bullets.forEach(b => b.draw());
       if (!this.over) {
@@ -386,7 +597,7 @@
       this.particles.forEach(pt => pt.draw());
 
       // cursor / tower ghost
-      if (this.selected && !this.over && this.started) {
+      if (this.selected && !this.over && this.started && !bot.on) {
         const s = TOWER_TYPES[this.selected];
         const ok = this.canPlace(mouse.x, mouse.y) && this.gold >= s.cost;
         rangeCircle(mouse.x, mouse.y, s.range, ok ? "80,255,120" : "255,80,80");
@@ -394,15 +605,17 @@
         roundRect(mouse.x - TOWER_RADIUS, mouse.y - TOWER_RADIUS, TOWER_RADIUS * 2, TOWER_RADIUS * 2, 5);
         ctx.globalAlpha = 1;
       } else {
-        ring(mouse.x, mouse.y, 8, "#fff", 1);
-        line(mouse.x - 12, mouse.y, mouse.x + 12, mouse.y, "#fff", 1);
-        line(mouse.x, mouse.y - 12, mouse.x, mouse.y + 12, "#fff", 1);
+        const cx = bot.on ? this.player.aimX : mouse.x, cy = bot.on ? this.player.aimY : mouse.y;
+        const col = bot.on ? "rgba(120,230,140,0.8)" : "#fff";
+        ring(cx, cy, 8, col, 1);
+        line(cx - 12, cy, cx + 12, cy, col, 1);
+        line(cx, cy - 12, cx, cy + 12, col, 1);
       }
       this.drawHud();
     },
 
     drawHud() {
-      ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, 0, W, 44);
+      ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, 0, W, HUD_H);
       const status = this.waveActive()
         ? `${this.mobs.length + this.spawnQueue.length} mobs left`
         : `next wave in ${Math.max(0, Math.ceil(this.breakTimer))}s [Space]`;
@@ -423,21 +636,37 @@
         ctx.font = `500 18px "JetBrains Mono", Consolas, monospace`;
         const w = ctx.measureText(label).width;
         x -= w;
-        if (this.selected === kind) { ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect(x - 6, 6, w + 12, 32, 4); ctx.stroke(); }
+        if (this.selected === kind && !bot.on) { ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect(x - 6, 6, w + 12, 32, 4); ctx.stroke(); }
         text(label, x, 22, { size: 18, color });
         x -= 24;
       }
+      const botLabel = bot.on ? "[B] BOT ON" : "[B] Bot";
+      ctx.font = `500 18px "JetBrains Mono", Consolas, monospace`;
+      x -= ctx.measureText(botLabel).width;
+      text(botLabel, x, 22, { size: 18, color: bot.on ? "#78e68c" : "#8b939e" });
+
+      // boss health bar
+      const boss = this.boss();
+      if (boss) {
+        const bw = 520, bx = (W - bw) / 2, by = HUD_H + 14;
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(bx - 4, by - 4, bw + 8, 22);
+        ctx.fillStyle = "#3c1414"; ctx.fillRect(bx, by, bw, 14);
+        ctx.fillStyle = "#e0324e"; ctx.fillRect(bx, by, bw * Math.max(0, boss.hp) / boss.maxHp, 14);
+        text(`BOSS  ${Math.ceil(boss.hp)} / ${Math.round(boss.maxHp)}`, W / 2, by + 7, { size: 13, align: "center", weight: 500 });
+      }
 
       if (this.messageTimer > 0 && !this.over && this.started)
-        text(this.message, W / 2, 110, { size: 56, align: "center", font: "ui", weight: 700, alpha: Math.min(1, this.messageTimer) });
+        text(this.message, W / 2, 120, { size: 56, align: "center", font: "ui", weight: 700, alpha: Math.min(1, this.messageTimer) });
 
-      if (!this.started) this.overlay("SWARM DEFENSE", "Click to start", [
+      if (!this.started) this.overlay("SWARM DEFENSE", "Click to start  ·  or press B to let the bot play", [
         "WASD move   ·   Mouse aim   ·   Hold left click to shoot",
         "1 / 2 pick a tower, right click to build it   ·   Space skips the break   ·   P pauses",
-        "Mobs come from every side. One hit and you're dead.",
+        `Mobs come from every side. Orange ones keep their distance and shoot. Boss every ${BOSS_EVERY} waves.`,
+        "One hit and you're dead.",
       ]);
       else if (this.paused) this.overlay("PAUSED", "Press P or Esc to resume");
-      else if (this.over) this.overlay("GAME OVER", `${this.deathReason}  ·  wave ${this.wave}, ${this.kills} kills  ·  press R to restart`);
+      else if (this.over) this.overlay("GAME OVER", `${this.deathReason}  ·  wave ${this.wave}, ${this.kills} kills  ·  ` +
+        (bot.on ? `bot restarts in ${Math.max(0, Math.ceil(4 - bot.restartTimer))}s` : "press R to restart"));
     },
 
     overlay(title, sub, lines = []) {
@@ -450,6 +679,8 @@
   };
 
   game.reset();
+  window.swarmDefense = { game, bot }; // handy for poking at it from the dev console
+
   let last = performance.now();
   function frame(now) {
     const dt = Math.min((now - last) / 1000, 1 / 30);
