@@ -68,7 +68,7 @@ def color_mask(lab_img, lab, tol):
 # The see-through panels the player can move behind: the health bar (dark red) and the score
 # panel (dark gray), as BGR colors. Behind them the player's gray gets blended with these.
 HUD_PANELS_BGR = [(20, 18, 16), (22, 18, 48)]
-PANEL_STRENGTHS = [0.3, 0.5, 0.7, 0.85]
+PANEL_STRENGTHS = [0.3, 0.5, 0.7]
 
 
 def shaded_player_colors(lab):
@@ -219,6 +219,8 @@ class Detector:
                 # is checked on its own, so the (equally darkened) white shield doesn't merge with it.
                 for shade in shaded_player_colors(labs[0]):
                     for b in self.blobs(lab_img, [shade], min_fill, tol=[16, 9, 9], min_r=smallest * 0.6 / s):
+                        if b[3][0] < 60:
+                            continue  # too dark: the boss's dark middle, not a shaded player
                         if not any(abs(b[0] - o[0]) < 4 and abs(b[1] - o[1]) < 4 for o in blobs):
                             blobs.append(b)
             used_rings = set()
