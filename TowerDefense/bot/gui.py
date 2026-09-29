@@ -8,13 +8,15 @@ you're in Roblox; the buttons here do the same thing.
 import json
 import os
 import queue
+import threading
 import subprocess
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from swarm_bot import (CONFIG_LOCK, CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset,
-                       save_config, update_training)
+                       read_config_or_empty, save_config)
+from phototrainer import list_photos, train_auto
 from vision import CLASSES, DEFAULT_TOLERANCE
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # source folder (not used when frozen)
@@ -160,22 +162,16 @@ class App:
         grid.bind_all("<ButtonRelease-1>", lambda _e: self.save_settings(), add="+")
         grid.columnconfigure(0, weight=1)
 
-        # --- training ----------------------------------------------------------
-        self._section(wrap, "TRAINING", top=12)
+        # --- photo trainer -----------------------------------------------------
+        self._section(wrap, "PHOTO TRAINER", top=12)
         trow = tk.Frame(wrap, bg=BG)
         trow.pack(fill="x")
-        tk.Label(trow, text="Learn from runs", bg=BG, fg=FG, font=FONT).pack(side="left")
-        modes = {"off": "Off", "semi": "Semi-auto (ask me)", "auto": "Auto"}
-        self.mode_names = modes
-        self.train_var = tk.StringVar(value=modes.get((cfg.get("training") or {}).get("mode", "off"), "Off"))
-        tbox = ttk.Combobox(trow, textvariable=self.train_var, values=list(modes.values()), state="readonly", width=18)
-        tbox.pack(side="left", padx=8)
-        tbox.bind("<<ComboboxSelected>>", lambda _e: self.set_training_mode())
-        ttk.Button(trow, text="Reset", command=self.reset_training).pack(side="left")
-        self.train_info = tk.StringVar()
-        tk.Label(wrap, textvariable=self.train_info, bg=BG, fg=MUTED, font=FONT, justify="left",
+        ttk.Button(trow, text="Train on photos (ask me)", command=self.train_semi).pack(side="left", padx=(0, 6))
+        ttk.Button(trow, text="Train on photos (auto)", command=self.train_auto).pack(side="left")
+        self.photos_var = tk.StringVar()
+        tk.Label(wrap, textvariable=self.photos_var, bg=BG, fg=MUTED, font=FONT, justify="left",
                  wraplength=400).pack(anchor="w", pady=(6, 0))
-        self.refresh_training()
+        self.training = False
 
         # --- log -------------------------------------------------------------
         self._section(wrap, "LOG", top=12)
@@ -184,6 +180,7 @@ class App:
         self.log.pack(fill="x")
 
         self.refresh_calibration()
+        self.refresh_photos()
         cfg_now = read_config() or {}
         if cfg_now.get("colors") and "preset" not in cfg_now:
             self.write_log("Your colors come from an older calibration that can mistake the background for a mob. "
@@ -264,28 +261,39 @@ class App:
         self.proc = subprocess.Popen(cmd, cwd=os.path.dirname(CONFIG_PATH))
         self.write_log(f"Opened {' '.join(args)} in a new window.")
 
-    def set_training_mode(self):
-        mode = {v: k for k, v in self.mode_names.items()}[self.train_var.get()]
-        update_training(lambda t: t.t.update({"mode": mode}))
-        self.write_log({"off": "Training off: the bot uses its best settings so far.",
-                        "semi": "Semi-auto: after each run you decide whether the tried change is kept.",
-                        "auto": "Auto: each change is played for 2 runs and kept if runs last longer."}[mode])
-        self.refresh_training()
+    def refresh_photos(self):
+        n = len(list_photos(SHOTS_DIR)) if os.path.isdir(SHOTS_DIR) else 0
+        self.photos_var.set(f"{n} photo(s) waiting. Press / while playing to add more. "
+                            "Each photo is deleted once it's been trained on." if n else
+                            "No photos yet. Press / while playing to save some, then train on them here.")
 
-    def reset_training(self):
-        if messagebox.askyesno("Reset training", "Forget everything the bot learned and go back to the default settings?"):
-            update_training(lambda t: t.reset())
-            self.write_log("Training reset to default settings.")
-            self.refresh_training()
+    def train_semi(self):
+        if not list_photos(SHOTS_DIR):
+            self.write_log("No photos to train on yet. Press / while playing to save some.")
+            return
+        self.launch("train")
 
-    def refresh_training(self):
-        t = (read_config() or {}).get("training") or {}
-        best = t.get("best_score")
-        text = f"Best settings survive {best:.0f}s on average ({t.get('best_runs', 0)} runs)." if best \
-            else "No runs recorded yet. Every run that ends in death counts; stopping with - doesn't."
-        if t.get("candidate") and t.get("mode", "off") != "off":
-            text += f"\nTrying a change ({len(t.get('cand_scores', []))} run(s) so far)."
-        self.train_info.set(text)
+    def train_auto(self):
+        if self.training or not list_photos(SHOTS_DIR):
+            if not self.training:
+                self.write_log("No photos to train on yet. Press / while playing to save some.")
+            return
+        self.training = True
+        self.ctl.stop()
+        self.write_log("Training on photos by itself...")
+
+        def work():
+            try:
+                with CONFIG_LOCK:
+                    cfg = read_config_or_empty()
+                    msg = train_auto(cfg, SHOTS_DIR, lambda t: self.events.put(("progress", t)))
+                    save_config(cfg)
+            except Exception as e:
+                msg = f"Photo training failed: {e}"
+            self.events.put(("log", msg))
+            self.events.put(("trained", ""))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def use_preset(self):
         has_region = apply_preset()
@@ -338,17 +346,20 @@ class App:
                 self.set_status(text)
             elif kind == "fps":
                 self.fps_var.set(f"{text} fps")
-            elif kind == "ask":
-                keep = messagebox.askyesno("Keep these settings?", text, parent=self.root)
-                self.ctl.answer(keep)
-                self.refresh_training()
+            elif kind == "progress":
+                self.photos_var.set(text)
+            elif kind == "trained":
+                self.training = False
+                self.refresh_photos()
+                self.refresh_calibration()
             else:
                 self.write_log(text)
-                if text.startswith(("Run ", "Kept", "Reverted")):
-                    self.refresh_training()
+                if text.startswith("Screenshot"):
+                    self.refresh_photos()
         if self.proc and self.proc.poll() is not None:
             self.proc = None
             self.refresh_calibration()
+            self.refresh_photos()
             self.write_log("Calibration/test window closed.")
         self.root.after(50, self.poll)
 

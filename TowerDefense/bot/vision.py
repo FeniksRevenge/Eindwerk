@@ -107,6 +107,8 @@ class Detector:
     def __init__(self, cfg):
         self.scale = int(cfg.get("downscale", 2))
         self.tol = cfg.get("tolerance", DEFAULT_TOLERANCE)
+        self.tol_arr = np.array(self.tol)
+        self.ignore = cfg.get("ignore", [])  # things marked "not a thing" in the photo trainer
         # Group classes whose colors are practically the same (calibration clicks on the same red
         # rarely give identical numbers), so one red blob is never reported as two things.
         self.groups = []  # [([lab, ...], [(name, radius), ...])]
@@ -124,13 +126,14 @@ class Detector:
                 self.groups.append(([c["lab"]], [(name, float(c["radius"]))]))
 
     def blobs(self, lab_img, labs, min_fill=0.3):
-        """(x, y, radius) of every roughly solid blob of these colors, in downscaled pixels."""
+        """(x, y, radius, mean_lab) of every roughly solid blob of these colors, in downscaled pixels."""
         mask = color_mask(lab_img, labs[0], self.tol)
         for lab in labs[1:]:
             mask |= color_mask(lab_img, lab, self.tol)
-        n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
         out = []
         for i in range(1, n):
+            bx, by = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
             bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
             area = stats[i, cv2.CC_STAT_AREA]
             # Skip thin lines (the aim line) and text-like shapes: real things fill their box.
@@ -138,32 +141,50 @@ class Detector:
                 continue
             if max(bw, bh) > 0.35 * min(lab_img.shape[:2]):
                 continue  # screen-sized: a color that matches the background, not a mob
-            out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0))
+            sel = labels[by:by + bh, bx:bx + bw] == i
+            mean_lab = lab_img[by:by + bh, bx:bx + bw][sel].mean(axis=0)
+            out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0, mean_lab))
         return out
 
-    def detect(self, bgr):
-        """Returns {class name: [(x, y, radius), ...]} in full-size pixel coordinates."""
+    def _ignored(self, lab, r):
+        """True if this looks like something you marked as 'not a thing' in the photo trainer."""
+        for ig in self.ignore:
+            if np.all(np.abs(lab - np.array(ig["lab"])) <= self.tol_arr * 0.5) and 0.75 <= r / ig["radius"] <= 1.33:
+                return True
+        return False
+
+    def detect_detailed(self, bgr):
+        """Every detection as a dict: name (what the bot treats it as), cls (the calibrated class),
+        x, y, r (full-size pixels) and lab (its average color)."""
         s = self.scale
         small = cv2.resize(bgr, (bgr.shape[1] // s, bgr.shape[0] // s), interpolation=cv2.INTER_NEAREST) if s > 1 else bgr
-        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
-        out = {name: [] for name in CLASSES}
+        lab_img = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
+        found = []
         for labs, members in self.groups:
             # Health pickups may be drawn as a ring, so allow hollow shapes for them.
             min_fill = 0.08 if any(m[0] == "health" for m in members) else 0.3
-            for (x, y, r) in self.blobs(lab, labs, min_fill):
+            for (x, y, r, lab) in self.blobs(lab_img, labs, min_fill):
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
-                name, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
+                cls, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
                 smallest = min(m[1] for m in members)
                 if r < smallest * 0.45:
                     continue  # specks and explosion particles
-                if (name in BULLET_CLASSES or name == "player") and r > r_exp * 2:
+                if (cls in BULLET_CLASSES or cls == "player") and r > r_exp * 2:
                     continue
-                if name == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
+                if cls == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
                     continue  # HUD text is gray too, but much smaller than the player
-                if name in BULLET_CLASSES:
-                    name = "enemy_bullet"  # all bullets are dodged the same way
-                out[name].append((x, y, r))
+                if self.ignore and self._ignored(lab, r):
+                    continue
+                name = "enemy_bullet" if cls in BULLET_CLASSES else cls  # all bullets are dodged the same way
+                found.append({"name": name, "cls": cls, "x": x, "y": y, "r": r, "lab": [float(v) for v in lab]})
+        return found
+
+    def detect(self, bgr):
+        """Returns {class name: [(x, y, radius), ...]} in full-size pixel coordinates."""
+        out = {name: [] for name in CLASSES}
+        for d in self.detect_detailed(bgr):
+            out[d["name"]].append((d["x"], d["y"], d["r"]))
         return out
 
 

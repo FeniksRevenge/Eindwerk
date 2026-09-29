@@ -15,7 +15,8 @@ class BotRunner:
         self.io = io
         self.params = params  # Brain settings (from training), or None for defaults
         self.detector = Detector(cfg)
-        self.death_timeout = float(cfg.get("death_timeout", 1.0))
+        # The player blinks when hit and banners cover the screen, so only give up after a while.
+        self.death_timeout = max(3.0, float(cfg.get("death_timeout", 4.0)))
         self.player_radius = float((cfg.get("colors", {}).get("player") or {}).get("radius", 0)) or None
         self.reset()
 

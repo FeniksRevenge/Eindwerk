@@ -6,7 +6,7 @@ it holds WASD to dodge, moves the mouse to aim and holds **Space** to shoot (swi
 - **`*`** starts it (Shift+8 or numpad `*`)
 - **`-`** stops it
 - **`/`** saves a screenshot of what the bot sees (you keep playing; see below)
-- It **stops by itself** when your player disappears (you died)
+- It keeps playing until you die: it **stops by itself** once your player has been gone for 4 seconds
 - It only sends keys/mouse while the **Roblox window is in front**, so it won't type into other apps
 
 Windows only.
@@ -70,16 +70,25 @@ If something isn't circled, or wrong things are, calibrate that thing again.
 ## Run
 Go to Roblox, start a run and press **`*`** (or click Start). Press **`-`** to stop.
 
-## Training (learns from its runs)
-The bot's dodging is steered by a few numbers (how close bullets and mobs may get, how much it avoids
-crowds and walls, how much it runs laps). In the app, **Training → Learn from runs**:
-- **Off**: uses the best settings found so far.
-- **Semi-auto (ask me)**: every run tries a small change; when the run ends it tells you how long you
-  survived and asks **Keep these settings?** Yes keeps the change, No throws it away.
-- **Auto**: every change is played for 2 runs and kept if the average run lasts longer than the best so far.
+## Photo trainer (teach it from screenshots)
+Press **`/`** while playing to save screenshots, then train on them in the app (**PHOTO TRAINER**).
+It opens every photo one after another and shows what the bot detected. Each finished photo is
+deleted (with its `_bot.png` and `.json`).
 
-Only runs that end in death count (stopping with `-` doesn't). Start each run with `*`.
-**Reset** goes back to the default settings. Every decision is written to `training_log.csv`.
+**Train on photos (ask me)**: you check each photo.
+| Key / click | Meaning |
+|---|---|
+| **Enter** | the bot's answer is right: learn from it, next photo |
+| **click a circle** | it's wrong: pick what it really is (a–k), or **x** = not a thing (ignored from now on) |
+| **click something without a circle** | the bot missed it: pick what it is |
+| **U** | undo your last correction |
+| **S** | skip this photo (it's kept) |
+| **Esc** | stop (the current photo is kept) |
+
+**Train on photos (auto)**: goes through all photos by itself and only learns from detections that
+already match well, so your real colors and sizes slowly replace the preset ones.
+
+What it learns (colors, sizes, and the "not a thing" list) is saved in `config.json`.
 
 ## Screenshots (`/`)
 Press **`/`** (or numpad `/`) anytime, with the bot running or not. Nothing pauses: it saves into the
@@ -96,7 +105,7 @@ If the bot misbehaves (e.g. keeps running to one side), send these; they show ex
 |---------|--------------|
 | `tolerance` | How close a color must be, `[L, a, b]`. Raise if things aren't found, lower if random stuff is. |
 | `downscale` | 2 = look at half resolution (faster). 1 = full resolution (more accurate, slower). |
-| `death_timeout` | Seconds the player must be missing before it counts as dead and stops. |
+| `death_timeout` | Seconds the player must be missing before it counts as dead and stops (at least 3). |
 | `require_focus` | `true` = only send input while Roblox is the active window. |
 | `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
 
