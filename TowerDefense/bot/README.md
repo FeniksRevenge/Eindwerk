@@ -55,6 +55,8 @@ Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
    splits into, the **red cross** (boss) and a **green health circle**.
 
 The bot walks over green health circles when it's safe to, and dodges both red and orange bullets.
+An orange ball **inside a ring** is a shooter, and its danger size is the whole ring; an orange ball
+**without a ring** is a bullet. (Same in Test view, the screenshots and the photo trainer.)
 It still finds you behind the see-through **health bar** and **score** panels, and when it briefly can't see
 you at all (behind a mob) it keeps playing from where you should be for up to 1.5 seconds.
 

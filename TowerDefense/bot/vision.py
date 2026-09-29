@@ -41,7 +41,7 @@ PRESET = {
         "enemy_bullet": {"lab": [131, 191, 167], "radius": 14.5},
         "shooter_bullet": {"lab": [189, 156, 192], "radius": 13.0},
         "grunt": {"lab": [139, 191, 165], "radius": 43.0},
-        "shooter": {"lab": [189, 156, 192], "radius": 14.0},
+        "shooter": {"lab": [189, 156, 192], "radius": 38.0},       # its whole ring, not just the ball
         "tank": {"lab": [151, 190, 65], "radius": 63.0},
         "tank_mini": {"lab": [183, 171, 85], "radius": 29.5},
         "boss": {"lab": [131, 191, 167], "radius": 128.0},
@@ -79,6 +79,29 @@ def shaded_player_colors(lab):
         for a in PANEL_STRENGTHS:
             mix = np.clip(bgr * (1 - a) + np.array(panel) * a, 0, 255).astype(np.uint8)
             out.append(bgr_to_lab_pixel(mix))
+    return out
+
+
+def find_rings(bgr, lab, scale, ball_r):
+    """Thin round rings in this color (the orange shooter's ring), as (x, y, r) in full-size pixels.
+    The ring is ~1 pixel wide, so the image is shrunk by averaging (keeps a faint ring) and matched
+    on hue only, then small gaps are closed."""
+    small = cv2.resize(bgr, (bgr.shape[1] // scale, bgr.shape[0] // scale), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    ref = cv2.cvtColor(cv2.cvtColor(np.uint8([[lab]]), cv2.COLOR_LAB2BGR), cv2.COLOR_BGR2HSV)[0, 0]
+    h = int(ref[0])
+    mask = cv2.inRange(hsv, np.array([max(h - 6, 0), 90, 45], np.uint8), np.array([min(h + 6, 179), 255, 255], np.uint8))
+    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8))
+    n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    out = []
+    for i in range(1, n):
+        bw, bh, area = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT], stats[i, cv2.CC_STAT_AREA]
+        r = max(bw, bh) / 2.0 * scale
+        if r < ball_r * 1.6 or r > ball_r * 8 or max(bw, bh) > 1.4 * min(bw, bh):
+            continue
+        if area > 0.6 * bw * bh:
+            continue  # a filled blob (e.g. a ball with the ring glued on), not a ring
+        out.append((cents[i][0] * scale + scale / 2, cents[i][1] * scale + scale / 2, r))
     return out
 
 
@@ -187,6 +210,9 @@ class Detector:
             # Health pickups may be drawn as a ring, so allow hollow shapes for them.
             min_fill = 0.08 if any(m[0] == "health" for m in members) else 0.3
             smallest = min(m[1] for m in members)
+            names = {m[0] for m in members}
+            # Orange shooters are a ball inside a ring; orange bullets are the same ball without one.
+            rings = find_rings(bgr, labs[0], s, smallest) if "shooter" in names else None
             blobs = self.blobs(lab_img, labs, min_fill, min_r=smallest * 0.45 / s)
             if len(members) == 1 and members[0][0] == "player":
                 # Also look for the player behind the see-through health bar / score panel. Each shade
@@ -195,6 +221,7 @@ class Detector:
                     for b in self.blobs(lab_img, [shade], min_fill, tol=[16, 9, 9], min_r=smallest * 0.6 / s):
                         if not any(abs(b[0] - o[0]) < 4 and abs(b[1] - o[1]) < 4 for o in blobs):
                             blobs.append(b)
+            used_rings = set()
             for (x, y, r, lab) in blobs:
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
@@ -206,10 +233,23 @@ class Detector:
                     continue
                 if cls == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
                     continue  # HUD text is gray too, but much smaller than the player
+                if rings is not None and cls in ("shooter", "shooter_bullet"):
+                    ring = next((g for g in rings if g[2] > r * 1.5 and math.hypot(g[0] - x, g[1] - y) < g[2] * 0.7), None)
+                    if ring is not None:
+                        cls, r = "shooter", ring[2]  # danger size = the whole ring, not just the ball
+                        used_rings.add(ring)
+                    elif "shooter_bullet" in names and r < 2.5 * dict(members).get("shooter_bullet", r):
+                        cls = "shooter_bullet"
                 if self.ignore and self._ignored(lab, r):
                     continue
                 name = "enemy_bullet" if cls in BULLET_CLASSES else cls  # all bullets are dodged the same way
                 found.append({"name": name, "cls": cls, "x": x, "y": y, "r": r, "lab": [float(v) for v in lab]})
+            # A shooter's ring with no ball visible (ball flashing or hidden) is still a shooter.
+            # The boss's small orange rings are too small to count.
+            for g in rings or []:
+                if g not in used_rings and g[2] >= 2.2 * smallest:
+                    found.append({"name": "shooter", "cls": "shooter", "x": g[0], "y": g[1], "r": g[2],
+                                  "lab": [float(v) for v in labs[0]]})
         return found
 
     def detect(self, bgr):
