@@ -14,6 +14,17 @@ Windows only.
 1. Install Python: open CMD and run `winget install Python.Python.3.12`, then close and reopen CMD.
 2. Download this `bot` folder (all files) somewhere, e.g. `C:\Users\super\swarm-bot`.
 
+## The app
+Double-click **`start_app.bat`**. It opens the Swarm Bot window with:
+- **Start / Stop** buttons (same as the `*` and `-` hotkeys, which keep working while you're in Roblox)
+- the bot's status (Running / Stopped (died) / Waiting for the player) and its speed in fps
+- **Calibrate everything**, **Test view** and **Redo one** (recalibrate just the boss, a bullet, ...)
+- settings: only control Roblox when it's the active window, how long the player must be gone
+  before it counts as dead, and color tolerance
+- a log of what happened
+
+The `.bat` files below do the same things without the app.
+
 ## Calibrate (once, or again if colors/sizes change)
 Double-click **`calibrate.bat`**.
 1. Start the game in Roblox. Try to have a basic mob, an orange shooter, a bullet and ideally the boss on screen; press **P** to pause there.

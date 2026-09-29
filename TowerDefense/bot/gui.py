@@ -1,0 +1,271 @@
+"""
+Swarm Bot app: a small window to calibrate, test and start/stop the screen bot.
+
+Start it with start_app.bat (or: pyw gui.py). The * and - hotkeys keep working while
+you're in Roblox; the buttons here do the same thing.
+"""
+
+import json
+import os
+import queue
+import subprocess
+import sys
+import tkinter as tk
+from tkinter import ttk
+
+from swarm_bot import CONFIG_PATH, BotController
+from vision import CLASSES, DEFAULT_TOLERANCE
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Colors taken from the game: near-black playfield, its red, and the player's green-gray.
+BG = "#07090d"
+PANEL = "#11151c"
+LINE = "#232a35"
+FG = "#e4e7ec"
+MUTED = "#8a93a1"
+RED = "#e84a4a"
+GREEN = "#6fdc8c"
+AMBER = "#ffa040"
+FONT = ("Segoe UI", 10)
+FONT_B = ("Segoe UI Semibold", 10)
+MONO = ("Consolas", 9)
+
+STATUS_COLORS = {
+    "Idle": MUTED,
+    "Running": GREEN,
+    "Waiting for the player to appear...": AMBER,
+    "Stopped": MUTED,
+    "Stopped (died)": RED,
+    "Error": RED,
+}
+
+
+def read_config():
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_config(cfg):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.events = queue.Queue()
+        self.proc = None  # running calibrate/view window, if any
+        self.ctl = BotController(on_event=lambda kind, text: self.events.put((kind, text)))
+        try:
+            self.ctl.listen_hotkeys()
+            hotkeys_ok = True
+        except Exception as e:  # pynput missing or blocked
+            hotkeys_ok = False
+            self.events.put(("log", f"Hotkeys unavailable ({e}). Use the buttons."))
+
+        root.title("Swarm Bot")
+        root.configure(bg=BG)
+        root.resizable(False, False)
+        self._style()
+
+        wrap = tk.Frame(root, bg=BG, padx=16, pady=14)
+        wrap.pack(fill="both", expand=True)
+
+        # --- status ------------------------------------------------------------
+        head = tk.Frame(wrap, bg=BG)
+        head.pack(fill="x")
+        tk.Label(head, text="SWARM BOT", bg=BG, fg=FG, font=("Consolas", 16, "bold")).pack(side="left")
+        self.fps_var = tk.StringVar(value="")
+        tk.Label(head, textvariable=self.fps_var, bg=BG, fg=MUTED, font=MONO).pack(side="right")
+
+        status_box = tk.Frame(wrap, bg=PANEL, highlightbackground=LINE, highlightthickness=1, padx=12, pady=10)
+        status_box.pack(fill="x", pady=(10, 10))
+        self.dot = tk.Canvas(status_box, width=14, height=14, bg=PANEL, highlightthickness=0)
+        self.dot.pack(side="left")
+        self.dot_id = self.dot.create_oval(2, 2, 12, 12, fill=MUTED, outline="")
+        self.status_var = tk.StringVar(value="Idle")
+        self.status_lbl = tk.Label(status_box, textvariable=self.status_var, bg=PANEL, fg=FG, font=("Segoe UI Semibold", 12))
+        self.status_lbl.pack(side="left", padx=(8, 0))
+
+        btns = tk.Frame(wrap, bg=BG)
+        btns.pack(fill="x")
+        self.start_btn = ttk.Button(btns, text="Start   ( * )", style="Go.TButton", command=self.start)
+        self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Stop   ( - )", style="Stop.TButton", command=self.ctl.stop).pack(side="left", expand=True, fill="x")
+        hint = "Hotkeys work while you're in Roblox. It stops by itself when you die." if hotkeys_ok \
+            else "Hotkeys are off; use the buttons."
+        tk.Label(wrap, text=hint, bg=BG, fg=MUTED, font=FONT).pack(anchor="w", pady=(6, 12))
+
+        # --- setup -------------------------------------------------------------
+        self._section(wrap, "SETUP")
+        setup = tk.Frame(wrap, bg=BG)
+        setup.pack(fill="x")
+        ttk.Button(setup, text="Calibrate everything", command=lambda: self.launch("calibrate")).pack(side="left", padx=(0, 6))
+        ttk.Button(setup, text="Test view", command=lambda: self.launch("view")).pack(side="left")
+
+        redo = tk.Frame(wrap, bg=BG)
+        redo.pack(fill="x", pady=(8, 0))
+        tk.Label(redo, text="Redo one:", bg=BG, fg=MUTED, font=FONT).pack(side="left")
+        self.redo_var = tk.StringVar(value="boss")
+        ttk.Combobox(redo, textvariable=self.redo_var, values=CLASSES, state="readonly", width=15).pack(side="left", padx=6)
+        ttk.Button(redo, text="Calibrate", command=lambda: self.launch("calibrate", self.redo_var.get())).pack(side="left")
+
+        self.calib_var = tk.StringVar()
+        tk.Label(wrap, textvariable=self.calib_var, bg=BG, fg=MUTED, font=FONT, justify="left",
+                 wraplength=380).pack(anchor="w", pady=(8, 12))
+
+        # --- settings ----------------------------------------------------------
+        self._section(wrap, "SETTINGS")
+        cfg = read_config() or {}
+        self.focus_var = tk.BooleanVar(value=cfg.get("require_focus", True))
+        ttk.Checkbutton(wrap, text="Only control Roblox when it's the active window", variable=self.focus_var,
+                        command=self.save_settings).pack(anchor="w")
+        self.top_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(wrap, text="Keep this window on top", variable=self.top_var,
+                        command=lambda: root.attributes("-topmost", self.top_var.get())).pack(anchor="w", pady=(2, 6))
+
+        grid = tk.Frame(wrap, bg=BG)
+        grid.pack(fill="x")
+        tk.Label(grid, text="Stop after player missing (s)", bg=BG, fg=FG, font=FONT).grid(row=0, column=0, sticky="w")
+        self.death_var = tk.DoubleVar(value=cfg.get("death_timeout", 1.5))
+        ttk.Spinbox(grid, from_=0.5, to=10, increment=0.5, textvariable=self.death_var, width=6,
+                    command=self.save_settings).grid(row=0, column=1, sticky="e", padx=(12, 0))
+        tk.Label(grid, text="Color tolerance", bg=BG, fg=FG, font=FONT).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        tol = cfg.get("tolerance", DEFAULT_TOLERANCE)
+        self.tol_var = tk.IntVar(value=int(tol[1]))
+        ttk.Scale(grid, from_=6, to=30, variable=self.tol_var, length=150,
+                  command=lambda _v: self.tol_lbl.config(text=str(self.tol_var.get()))).grid(row=1, column=1, pady=(6, 0))
+        self.tol_lbl = tk.Label(grid, text=str(self.tol_var.get()), bg=BG, fg=MUTED, font=MONO, width=3)
+        self.tol_lbl.grid(row=1, column=2, pady=(6, 0))
+        grid.bind_all("<ButtonRelease-1>", lambda _e: self.save_settings(), add="+")
+        grid.columnconfigure(0, weight=1)
+
+        # --- log -------------------------------------------------------------
+        self._section(wrap, "LOG", top=12)
+        self.log = tk.Text(wrap, height=7, width=52, bg=PANEL, fg=FG, font=MONO, relief="flat",
+                           highlightbackground=LINE, highlightthickness=1, state="disabled", padx=8, pady=6)
+        self.log.pack(fill="x")
+
+        self.refresh_calibration()
+        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.after(50, self.poll)
+
+    # ------------------------------------------------------------------ ui helpers
+    def _style(self):
+        s = ttk.Style()
+        s.theme_use("clam")
+        s.configure("TButton", background=PANEL, foreground=FG, bordercolor=LINE, focuscolor=PANEL,
+                    lightcolor=PANEL, darkcolor=PANEL, padding=(12, 6), font=FONT)
+        s.map("TButton", background=[("active", LINE)])
+        s.configure("Go.TButton", background="#173a24", foreground=GREEN, font=FONT_B, padding=(12, 10))
+        s.map("Go.TButton", background=[("active", "#1f4d30")])
+        s.configure("Stop.TButton", background="#3a1717", foreground=RED, font=FONT_B, padding=(12, 10))
+        s.map("Stop.TButton", background=[("active", "#4d1f1f")])
+        s.configure("TCheckbutton", background=BG, foreground=FG, font=FONT, focuscolor=BG)
+        s.map("TCheckbutton", background=[("active", BG)])
+        s.configure("TCombobox", fieldbackground=PANEL, background=PANEL, foreground=FG, arrowcolor=FG, bordercolor=LINE)
+        s.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", FG)],
+              selectbackground=[("readonly", PANEL)], selectforeground=[("readonly", FG)])
+        s.configure("TSpinbox", fieldbackground=PANEL, background=PANEL, foreground=FG, arrowcolor=FG, bordercolor=LINE)
+        s.configure("Horizontal.TScale", background=BG, troughcolor=PANEL, bordercolor=LINE)
+        self.root.option_add("*TCombobox*Listbox.background", PANEL)
+        self.root.option_add("*TCombobox*Listbox.foreground", FG)
+
+    def _section(self, parent, title, top=0):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=(top, 6))
+        tk.Label(row, text=title, bg=BG, fg=MUTED, font=("Consolas", 9, "bold")).pack(side="left")
+        tk.Frame(row, bg=LINE, height=1).pack(side="left", fill="x", expand=True, padx=(8, 0), pady=(2, 0))
+
+    def write_log(self, text):
+        self.log.configure(state="normal")
+        self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def set_status(self, text):
+        self.status_var.set(text)
+        self.dot.itemconfig(self.dot_id, fill=STATUS_COLORS.get(text, MUTED))
+        if not text.startswith("Running") and not text.startswith("Waiting"):
+            self.fps_var.set("")
+
+    def refresh_calibration(self):
+        cfg = read_config()
+        if not cfg or "region" not in cfg:
+            self.calib_var.set("Not calibrated yet. Click 'Calibrate everything' first.")
+            self.start_btn.state(["disabled"])
+            return
+        done = [n for n in CLASSES if cfg.get("colors", {}).get(n)]
+        missing = [n for n in CLASSES if n not in done]
+        r = cfg["region"]
+        text = f"Play area {r['width']}x{r['height']}.  Knows: {', '.join(done)}."
+        if missing:
+            text += f"\nNot set: {', '.join(missing)}."
+        self.calib_var.set(text)
+        self.start_btn.state(["!disabled"])
+
+    # ------------------------------------------------------------------ actions
+    def start(self):
+        if self.proc and self.proc.poll() is None:
+            self.write_log("Close the calibration/test window first.")
+            return
+        self.ctl.start()
+
+    def launch(self, *args):
+        if self.proc and self.proc.poll() is None:
+            self.write_log("A calibration/test window is already open.")
+            return
+        self.ctl.stop()
+        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+        exe = sys.executable
+        if exe.lower().endswith("pythonw.exe"):  # calibration asks questions in a console
+            exe = exe[:-5] + ".exe"
+        self.proc = subprocess.Popen([exe, os.path.join(HERE, "swarm_bot.py"), *args], cwd=HERE, creationflags=flags)
+        self.write_log(f"Opened {' '.join(args)} in a new window.")
+
+    def save_settings(self):
+        cfg = read_config()
+        if not cfg:
+            return
+        try:
+            death = float(self.death_var.get())
+        except (tk.TclError, ValueError):
+            return
+        v = int(self.tol_var.get())
+        new = {"require_focus": bool(self.focus_var.get()), "death_timeout": death,
+               "tolerance": [round(v * 30 / 14), v, v]}
+        if any(cfg.get(k) != val for k, val in new.items()):
+            cfg.update(new)
+            write_config(cfg)
+
+    def poll(self):
+        while True:
+            try:
+                kind, text = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "status":
+                self.set_status(text)
+            elif kind == "fps":
+                self.fps_var.set(f"{text} fps")
+            else:
+                self.write_log(text)
+        if self.proc and self.proc.poll() is not None:
+            self.proc = None
+            self.refresh_calibration()
+            self.write_log("Calibration/test window closed.")
+        self.root.after(50, self.poll)
+
+    def close(self):
+        self.ctl.quit()
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    App(root)
+    root.mainloop()

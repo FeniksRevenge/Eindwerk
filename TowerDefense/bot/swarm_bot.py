@@ -135,7 +135,7 @@ class WindowsIO:
 # --------------------------------------------------------------------------- config
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        sys.exit("No config.json yet. Run calibrate.bat (or: py swarm_bot.py calibrate) first.")
+        raise FileNotFoundError("No config.json yet. Calibrate first.")
     with open(CONFIG_PATH) as f:
         return json.load(f)
 
@@ -260,64 +260,124 @@ def view():
 
 
 # --------------------------------------------------------------------------- run
-def run():
-    from pynput import keyboard
+class BotController:
+    """Runs the bot on a background thread. Used by both the command line and the app (gui.py).
 
-    cfg = load_config()
-    io = WindowsIO(cfg["region"], cfg.get("require_focus", True))
-    bot = BotRunner(cfg, io)
-    flags = {"start": False, "stop": False}
+    `on_event(kind, text)` is called from the bot thread with kind "status", "log" or "fps".
+    """
 
-    def on_press(k):
-        ch = getattr(k, "char", None)
-        vk = getattr(k, "vk", None)
-        if ch == "*" or vk == 106:            # * (Shift+8 or numpad *)
-            flags["start"] = True
-        elif ch == "-" or vk in (109, 189):   # - (main keyboard or numpad -)
-            flags["stop"] = True
+    def __init__(self, on_event=lambda kind, text: print(text)):
+        self.on_event = on_event
+        self._start = threading.Event()
+        self._stop = threading.Event()
+        self._quit = threading.Event()
+        self.running = False
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
 
-    threading.Thread(target=keyboard.Listener(on_press=on_press).run, daemon=True).start()
-    print("Bot ready.  *  = start    -  = stop    (Ctrl+C in this window = quit)")
-    running = False
-    frames, fps_t = 0, time.perf_counter()
-    try:
-        while True:
-            if flags["start"]:
-                flags["start"] = False
-                if not running:
-                    bot.reset()
-                    running = True
-                    print("Started.")
-            if flags["stop"]:
-                flags["stop"] = False
-                if running:
-                    running = False
+    def start(self):
+        self._start.set()
+
+    def stop(self):
+        self._stop.set()
+
+    def quit(self):
+        self._quit.set()
+        self._stop.set()
+
+    def listen_hotkeys(self):
+        """Global * (start) and - (stop) keys, working even while Roblox has focus."""
+        from pynput import keyboard
+
+        def on_press(k):
+            ch = getattr(k, "char", None)
+            vk = getattr(k, "vk", None)
+            if ch == "*" or vk == 106:            # * (Shift+8 or numpad *)
+                self.start()
+            elif ch == "-" or vk in (109, 189):   # - (main keyboard or numpad -)
+                self.stop()
+
+        listener = keyboard.Listener(on_press=on_press)
+        listener.daemon = True
+        listener.start()
+        return listener
+
+    def _loop(self):
+        bot = None
+        frames, fps_t = 0, time.perf_counter()
+        last_status = None
+        while not self._quit.is_set():
+            if self._start.is_set():
+                self._start.clear()
+                self._stop.clear()
+                if not self.running:
+                    try:
+                        cfg = load_config()  # re-read, in case calibration changed it
+                        bot = BotRunner(cfg, WindowsIO(cfg["region"], cfg.get("require_focus", True)))
+                        self.running = True
+                        last_status = None
+                        self.on_event("status", "Running")
+                        self.on_event("log", "Started.")
+                    except Exception as e:
+                        self.on_event("log", f"Can't start: {e}")
+            if self._stop.is_set():
+                self._stop.clear()
+                if self.running:
+                    self.running = False
                     bot.release()
-                    print("Stopped (you pressed -).")
-            if not running:
+                    self.on_event("status", "Stopped")
+                    self.on_event("log", "Stopped.")
+            if not self.running:
                 time.sleep(0.02)
                 continue
-            status = bot.step()
+            try:
+                status = bot.step()
+            except Exception as e:
+                self.running = False
+                bot.release()
+                self.on_event("status", "Error")
+                self.on_event("log", f"Error, stopped: {e}")
+                continue
             if status == "dead":
-                running = False
-                print("Player disappeared (died?), stopped. Press * to start again.")
+                self.running = False
+                self.on_event("status", "Stopped (died)")
+                self.on_event("log", "Player disappeared (died?), stopped. Press * to start again.")
+                continue
+            shown = "Waiting for the player to appear..." if status == "waiting" else "Running"
+            if shown != last_status:
+                self.on_event("status", shown)
+                last_status = shown
             frames += 1
-            if time.perf_counter() - fps_t > 5:
-                print(f"  running at {frames / (time.perf_counter() - fps_t):.0f} fps")
+            if time.perf_counter() - fps_t > 1:
+                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f}")
                 frames, fps_t = 0, time.perf_counter()
+        if bot is not None:
+            bot.release()
+
+
+def run():
+    load_config()
+    ctl = BotController()
+    ctl.listen_hotkeys()
+    print("Bot ready.  *  = start    -  = stop    (Ctrl+C in this window = quit)")
+    try:
+        while True:
+            time.sleep(0.2)
     except KeyboardInterrupt:
-        pass
-    finally:
-        bot.release()
+        ctl.quit()
+        ctl.thread.join(1)
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if args and args[0] == "calibrate":
-        calibrate(args[1:])
-    elif args and args[0] == "view":
-        view()
-    else:
-        if os.name != "nt":
+    try:
+        if args and args[0] == "calibrate":
+            calibrate(args[1:])
+        elif args and args[0] == "view":
+            view()
+        elif os.name != "nt":
             sys.exit("Running the bot needs Windows.")
-        run()
+        else:
+            run()
+    except FileNotFoundError as e:
+        sys.exit(str(e))
