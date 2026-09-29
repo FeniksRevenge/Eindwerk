@@ -139,14 +139,17 @@ class App:
                         command=self.save_settings).pack(anchor="w")
         self.top_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(wrap, text="Keep this window on top", variable=self.top_var,
-                        command=lambda: root.attributes("-topmost", self.top_var.get())).pack(anchor="w", pady=(2, 6))
+                        command=lambda: root.attributes("-topmost", self.top_var.get())).pack(anchor="w", pady=(2, 0))
+        self.shots_on_var = tk.BooleanVar(value=cfg.get("auto_shots", True))
+        ttk.Checkbutton(wrap, text="Take pictures automatically while the bot plays", variable=self.shots_on_var,
+                        command=self.save_settings).pack(anchor="w", pady=(2, 6))
 
         grid = tk.Frame(wrap, bg=BG)
         grid.pack(fill="x")
-        tk.Label(grid, text="Auto screenshot every (s, 0 = off)", bg=BG, fg=FG, font=FONT).grid(
+        tk.Label(grid, text="Picture every (seconds)", bg=BG, fg=FG, font=FONT).grid(
             row=3, column=0, sticky="w", pady=(6, 0))
         self.auto_var = tk.DoubleVar(value=cfg.get("auto_shot_every", 10))
-        ttk.Spinbox(grid, from_=0, to=120, increment=5, textvariable=self.auto_var, width=6,
+        ttk.Spinbox(grid, from_=1, to=120, increment=5, textvariable=self.auto_var, width=6,
                     command=self.save_settings).grid(row=3, column=1, sticky="e", pady=(6, 0))
         tk.Label(grid, text="Shoot with", bg=BG, fg=FG, font=FONT).grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.fire_var = tk.StringVar(value="Space" if cfg.get("fire_with", "space") == "space" else "Left mouse")
@@ -351,6 +354,7 @@ class App:
         new = {"require_focus": bool(self.focus_var.get()), "death_timeout": death,
                "fire_with": "space" if self.fire_var.get() == "Space" else "mouse",
                "auto_shot_every": auto_every,
+               "auto_shots": bool(self.shots_on_var.get()),
                "tolerance": [round(v * 30 / 14), v, v]}
         if any(cfg.get(k) != val for k, val in new.items()):
             cfg.update(new)

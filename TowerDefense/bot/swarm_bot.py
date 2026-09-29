@@ -223,6 +223,7 @@ def save_config(cfg):
     cfg.setdefault("require_focus", True)
     cfg.setdefault("fire_with", "space")
     cfg.setdefault("auto_shot_every", 10)
+    cfg.setdefault("auto_shots", True)
     with CONFIG_LOCK:
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w") as f:
@@ -425,7 +426,7 @@ class BotController:
                                                           cfg.get("fire_with", "space")))
                         self.running = True
                         last_status = None
-                        auto_every = float(cfg.get("auto_shot_every", 10))
+                        auto_every = float(cfg.get("auto_shot_every", 10)) if cfg.get("auto_shots", True) else 0
                         next_auto = time.perf_counter() + auto_every
                         self.on_event("status", "Running")
                         self.on_event("log", "Started.")
