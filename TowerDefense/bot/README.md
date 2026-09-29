@@ -48,6 +48,9 @@ Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
 
 The bot walks over green health circles when it's safe to, and dodges both red and orange bullets.
 
+**Click on the solid, colored middle of each thing** (not a thin ring or outline). Clicks on the background
+are refused. **Close Roblox chat** (chat icon, top left) before botting: its emoji icons look like bullets.
+
 Missed the boss? Use **Redo one → boss** in the app later with the boss on screen (keeps everything else).
 
 ## Check it

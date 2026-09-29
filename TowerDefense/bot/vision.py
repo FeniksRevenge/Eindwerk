@@ -44,19 +44,37 @@ def color_mask(lab_img, lab, tol):
     return cv2.inRange(lab_img, lo, hi)
 
 
+def background_lab(bgr_img):
+    """The most common color of the image = the background."""
+    small = cv2.resize(bgr_img, (64, 36), interpolation=cv2.INTER_AREA)
+    return np.median(cv2.cvtColor(small, cv2.COLOR_BGR2LAB).reshape(-1, 3), axis=0)
+
+
 def measure_blob(bgr_img, x, y, tol=DEFAULT_TOLERANCE):
-    """Color and size of the blob under (x, y). Used by calibration when you click something."""
-    h, w = bgr_img.shape[:2]
-    patch = bgr_img[max(0, y - 2):y + 3, max(0, x - 2):x + 3].reshape(-1, 3)
-    bgr = np.median(patch, axis=0).astype(np.uint8)
-    lab = bgr_to_lab_pixel(bgr)
-    mask = color_mask(cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB), lab, tol)
+    """Color and size of the thing under (x, y). Used by calibration when you click something.
+
+    Returns (lab, radius), or (None, 0) when the click landed on background (e.g. next to a
+    thin ring), so a bad click can't teach the bot that the background is an enemy.
+    """
+    lab_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB)
+    bg = background_lab(bgr_img)
+    patch = lab_img[max(0, y - 3):y + 4, max(0, x - 3):x + 4].reshape(-1, 3).astype(np.float64)
+    colored = patch[np.linalg.norm(patch - bg, axis=1) > 35]  # ignore background pixels around the click
+    if len(colored) < 3:
+        return None, 0.0
+    lab = [int(v) for v in np.median(colored, axis=0)]
+    mask = color_mask(lab_img, lab, tol)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    comp = labels[y, x]
-    if comp == 0:
-        return lab, 0.0
+    # The component under the click, or the nearest colored pixel's component.
+    ys, xs = np.nonzero(labels[max(0, y - 3):y + 4, max(0, x - 3):x + 4])
+    if len(xs) == 0:
+        return None, 0.0
+    comp = labels[max(0, y - 3) + ys[0], max(0, x - 3) + xs[0]]
     bw, bh = stats[comp, cv2.CC_STAT_WIDTH], stats[comp, cv2.CC_STAT_HEIGHT]
-    return lab, max(bw, bh) / 2.0
+    radius = max(bw, bh) / 2.0
+    if radius > 0.3 * min(bgr_img.shape[:2]) or radius < 3:
+        return None, 0.0  # screen-sized (background) or a sliver of a thin ring
+    return lab, radius
 
 
 class Detector:
@@ -70,15 +88,27 @@ class Detector:
     def __init__(self, cfg):
         self.scale = int(cfg.get("downscale", 2))
         self.tol = cfg.get("tolerance", DEFAULT_TOLERANCE)
-        groups = {}
+        # Group classes whose colors are practically the same (calibration clicks on the same red
+        # rarely give identical numbers), so one red blob is never reported as two things.
+        self.groups = []  # [([lab, ...], [(name, radius), ...])]
+        tol = np.array(self.tol)
         for name, c in cfg["colors"].items():
-            if c and c.get("lab") and float(c.get("radius", 0)) > 0:
-                groups.setdefault(tuple(c["lab"]), []).append((name, float(c["radius"])))
-        self.groups = list(groups.items())
+            if not (c and c.get("lab") and float(c.get("radius", 0)) > 0):
+                continue
+            lab = np.array(c["lab"])
+            for labs, members in self.groups:
+                if any(np.all(np.abs(lab - np.array(other)) <= tol * 0.6) for other in labs):
+                    labs.append(c["lab"])
+                    members.append((name, float(c["radius"])))
+                    break
+            else:
+                self.groups.append(([c["lab"]], [(name, float(c["radius"]))]))
 
-    def blobs(self, lab_img, lab, min_fill=0.3):
-        """(x, y, radius) of every roughly solid blob of this color, in downscaled pixels."""
-        mask = color_mask(lab_img, lab, self.tol)
+    def blobs(self, lab_img, labs, min_fill=0.3):
+        """(x, y, radius) of every roughly solid blob of these colors, in downscaled pixels."""
+        mask = color_mask(lab_img, labs[0], self.tol)
+        for lab in labs[1:]:
+            mask |= color_mask(lab_img, lab, self.tol)
         n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
         out = []
         for i in range(1, n):
@@ -87,6 +117,8 @@ class Detector:
             # Skip thin lines (the aim line) and text-like shapes: real things fill their box.
             if max(bw, bh) > 3 * max(1, min(bw, bh)) or area < min_fill * bw * bh:
                 continue
+            if max(bw, bh) > 0.35 * min(lab_img.shape[:2]):
+                continue  # screen-sized: a color that matches the background, not a mob
             out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0))
         return out
 
@@ -96,10 +128,10 @@ class Detector:
         small = cv2.resize(bgr, (bgr.shape[1] // s, bgr.shape[0] // s), interpolation=cv2.INTER_NEAREST) if s > 1 else bgr
         lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
         out = {name: [] for name in CLASSES}
-        for lab_c, members in self.groups:
+        for labs, members in self.groups:
             # Health pickups may be drawn as a ring, so allow hollow shapes for them.
             min_fill = 0.08 if any(m[0] == "health" for m in members) else 0.3
-            for (x, y, r) in self.blobs(lab, lab_c, min_fill):
+            for (x, y, r) in self.blobs(lab, labs, min_fill):
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
                 name, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
@@ -200,3 +232,4 @@ def annotate(frame, dets, player=None, keys=None, aim=None, extra=""):
     cv2.rectangle(img, (0, 0), (img.shape[1], 30), (0, 0, 0), -1)
     cv2.putText(img, info, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 255, 140), 1, cv2.LINE_AA)
     return img
+

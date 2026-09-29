@@ -234,6 +234,10 @@ def calibrate(only):
                 break
             cx, cy = int(clicked[0][0] / s), int(clicked[0][1] / s)
             lab, radius = measure_blob(crop, cx, cy)
+            if lab is None:
+                cv2.imshow(win, banner(disp, "That's background. Click right on the colored part (the solid middle).  (any key)"))
+                cv2.waitKey(0)
+                continue
             preview = disp.copy()
             cv2.circle(preview, (int(cx * s), int(cy * s)), max(3, int(radius * s)), (0, 255, 0), 2)
             cv2.imshow(win, banner(preview, f"{name}: size {radius:.0f}px.   ENTER = ok   R = redo"))
