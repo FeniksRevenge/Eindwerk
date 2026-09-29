@@ -22,12 +22,13 @@ import mss
 import numpy as np
 
 from runner import BotRunner
-from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, Detector, measure_blob
+from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, Detector, annotate, measure_blob
 
 # When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
 FROZEN = getattr(sys, "frozen", False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
+SHOTS_DIR = os.path.join(HERE, "screenshots")
 
 # Make screen coordinates real pixels even with Windows display scaling (125%, 150%...).
 try:
@@ -256,10 +257,6 @@ def calibrate(only):
     print(f"\nSaved {CONFIG_PATH}. Next: use Test view to check the bot sees everything.")
 
 
-COLORS = {"player": (140, 230, 120), "enemy_bullet": (80, 80, 255), "shooter_bullet": (80, 80, 255), "grunt": (60, 60, 230), "runner": (90, 220, 230),
-          "shooter": (50, 150, 255), "tank": (230, 130, 70), "boss": (200, 40, 200)}
-
-
 def view():
     cfg = load_config()
     det = Detector(cfg)
@@ -270,13 +267,8 @@ def view():
             frame = np.ascontiguousarray(np.asarray(sct.grab(cfg["region"]))[:, :, :3])
             dets = det.detect(frame)
             ms = (time.perf_counter() - t) * 1000
-            for name, items in dets.items():
-                for (x, y, r) in items:
-                    cv2.circle(frame, (int(x), int(y)), int(r) + 3, COLORS[name], 2)
-                    cv2.putText(frame, name, (int(x - r), int(y - r - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[name], 1)
-            counts = "  ".join(f"{n}:{len(v)}" for n, v in dets.items() if v)
-            disp, _ = fit_to_screen(frame, 1000, 600)
-            cv2.imshow(win, banner(disp, f"{counts or 'nothing found'}   ({ms:.0f} ms)"))
+            disp, _ = fit_to_screen(annotate(frame, dets, extra=f"({ms:.0f} ms)"), 1000, 600)
+            cv2.imshow(win, disp)
             if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                 break
     cv2.destroyAllWindows()
@@ -294,6 +286,8 @@ class BotController:
         self._start = threading.Event()
         self._stop = threading.Event()
         self._quit = threading.Event()
+        self._snap = threading.Event()
+        self.shots_saved = 0
         self.running = False
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -304,12 +298,15 @@ class BotController:
     def stop(self):
         self._stop.set()
 
+    def screenshot(self):
+        self._snap.set()
+
     def quit(self):
         self._quit.set()
         self._stop.set()
 
     def listen_hotkeys(self):
-        """Global * (start) and - (stop) keys, working even while Roblox has focus."""
+        """Global * (start), - (stop) and / (screenshot) keys, working even while Roblox has focus."""
         from pynput import keyboard
 
         def on_press(k):
@@ -319,6 +316,8 @@ class BotController:
                 self.start()
             elif ch == "-" or vk in (109, 189):   # - (main keyboard or numpad -)
                 self.stop()
+            elif ch == "/" or vk == 111:          # / (main keyboard or numpad /)
+                self.screenshot()
 
         listener = keyboard.Listener(on_press=on_press)
         listener.daemon = True
@@ -330,6 +329,9 @@ class BotController:
         frames, fps_t = 0, time.perf_counter()
         last_status = None
         while not self._quit.is_set():
+            if self._snap.is_set():
+                self._snap.clear()
+                self._take_screenshot(bot if self.running else None)
             if self._start.is_set():
                 self._start.clear()
                 self._stop.clear()
@@ -355,6 +357,8 @@ class BotController:
                 continue
             try:
                 status = bot.step()
+                while bot.notes:
+                    self.on_event("log", bot.notes.pop(0))
             except Exception as e:
                 self.running = False
                 bot.release()
@@ -378,11 +382,48 @@ class BotController:
             bot.release()
 
 
+    def _take_screenshot(self, bot):
+        """Grab what the bot sees right now and save it on another thread, so play isn't interrupted."""
+        try:
+            if bot is not None and bot.last is not None:
+                last = dict(bot.last)
+            else:  # bot not running: just look at the screen
+                cfg = load_config()
+                with mss.mss() as sct:
+                    frame = np.ascontiguousarray(np.asarray(sct.grab(cfg["region"]))[:, :, :3])
+                last = {"frame": frame, "dets": Detector(cfg).detect(frame), "player": None,
+                        "keys": (), "aim": None, "fire": False}
+        except Exception as e:
+            self.on_event("log", f"Screenshot failed: {e}")
+            return
+        self.shots_saved += 1
+        n = self.shots_saved
+        threading.Thread(target=self._write_screenshot, args=(last, n, bot is not None), daemon=True).start()
+
+    def _write_screenshot(self, last, n, running):
+        try:
+            os.makedirs(SHOTS_DIR, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
+            base = os.path.join(SHOTS_DIR, f"shot_{stamp}")
+            extra = f"speed {last['speed']:.0f}px/s" if last.get("speed") else ("bot running" if running else "bot not running")
+            cv2.imwrite(base + ".png", last["frame"])
+            cv2.imwrite(base + "_bot.png", annotate(last["frame"], last["dets"], last["player"], last["keys"],
+                                                    last["aim"], extra))
+            info = {k: last.get(k) for k in ("player", "keys", "aim", "fire", "speed")}
+            info["detections"] = last["dets"]
+            info["bot_running"] = running
+            with open(base + ".json", "w") as f:
+                json.dump(info, f, indent=1, default=float)
+            self.on_event("log", f"Screenshot {n} saved: {os.path.basename(base)}.png")
+        except Exception as e:
+            self.on_event("log", f"Screenshot failed: {e}")
+
+
 def run():
     load_config()
     ctl = BotController()
     ctl.listen_hotkeys()
-    print("Bot ready.  *  = start    -  = stop    (Ctrl+C in this window = quit)")
+    print("Bot ready.  *  = start    -  = stop    /  = screenshot    (Ctrl+C in this window = quit)")
     try:
         while True:
             time.sleep(0.2)

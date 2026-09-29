@@ -13,7 +13,7 @@ import sys
 import tkinter as tk
 from tkinter import ttk
 
-from swarm_bot import CONFIG_PATH, FROZEN, BotController
+from swarm_bot import CONFIG_PATH, FROZEN, SHOTS_DIR, BotController
 from vision import CLASSES, DEFAULT_TOLERANCE
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # source folder (not used when frozen)
@@ -96,9 +96,14 @@ class App:
         self.start_btn = ttk.Button(btns, text="Start   ( * )", style="Go.TButton", command=self.start)
         self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns, text="Stop   ( - )", style="Stop.TButton", command=self.ctl.stop).pack(side="left", expand=True, fill="x")
-        hint = "Hotkeys work while you're in Roblox. It stops by itself when you die." if hotkeys_ok \
+        hint = ("Hotkeys work while you're in Roblox. It stops by itself when you die.\n"
+                "Press / anytime to save a screenshot of what the bot sees.") if hotkeys_ok \
             else "Hotkeys are off; use the buttons."
-        tk.Label(wrap, text=hint, bg=BG, fg=MUTED, font=FONT).pack(anchor="w", pady=(6, 12))
+        tk.Label(wrap, text=hint, bg=BG, fg=MUTED, font=FONT, justify="left").pack(anchor="w", pady=(6, 8))
+        shots = tk.Frame(wrap, bg=BG)
+        shots.pack(fill="x", pady=(0, 12))
+        ttk.Button(shots, text="Screenshot  ( / )", command=self.ctl.screenshot).pack(side="left", padx=(0, 6))
+        ttk.Button(shots, text="Open screenshots folder", command=self.open_shots).pack(side="left")
 
         # --- setup -------------------------------------------------------------
         self._section(wrap, "SETUP")
@@ -226,6 +231,13 @@ class App:
             cmd = [sys.executable, os.path.join(HERE, "swarm_bot.py"), *args]
         self.proc = subprocess.Popen(cmd, cwd=os.path.dirname(CONFIG_PATH))
         self.write_log(f"Opened {' '.join(args)} in a new window.")
+
+    def open_shots(self):
+        os.makedirs(SHOTS_DIR, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(SHOTS_DIR)
+        else:
+            self.write_log(f"Screenshots are in {SHOTS_DIR}")
 
     def save_settings(self):
         cfg = read_config()

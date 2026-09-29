@@ -168,3 +168,29 @@ class Tracker:
                     new_tracks.append(t)
         self.tracks = new_tracks
         return self.tracks
+
+
+DRAW_COLORS = {"player": (140, 230, 120), "enemy_bullet": (80, 80, 255), "shooter_bullet": (80, 80, 255),
+               "grunt": (60, 60, 230), "runner": (90, 220, 230), "shooter": (50, 150, 255),
+               "tank": (230, 130, 70), "boss": (200, 40, 200)}
+
+
+def annotate(frame, dets, player=None, keys=None, aim=None, extra=""):
+    """Copy of the frame with what the bot sees and decided drawn on top."""
+    img = frame.copy()
+    for name, items in dets.items():
+        for (x, y, r) in items:
+            cv2.circle(img, (int(x), int(y)), int(r) + 3, DRAW_COLORS[name], 2)
+            cv2.putText(img, name, (int(x - r), int(y - r - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, DRAW_COLORS[name], 1)
+    if player is not None:
+        x, y, r = player
+        cv2.circle(img, (int(x), int(y)), int(r) + 8, (255, 255, 255), 3)
+        cv2.putText(img, "BOT THINKS THIS IS YOU", (int(x - r), int(y + r + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        if aim is not None:
+            cv2.line(img, (int(x), int(y)), (int(aim[0]), int(aim[1])), (0, 255, 255), 1)
+            cv2.drawMarker(img, (int(aim[0]), int(aim[1])), (0, 255, 255), cv2.MARKER_CROSS, 18, 2)
+    counts = "  ".join(f"{n}:{len(v)}" for n, v in dets.items() if v) or "nothing found"
+    info = f"keys: {''.join(keys).upper() if keys else '-'}   {counts}   {extra}"
+    cv2.rectangle(img, (0, 0), (img.shape[1], 30), (0, 0, 0), -1)
+    cv2.putText(img, info, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 255, 140), 1, cv2.LINE_AA)
+    return img

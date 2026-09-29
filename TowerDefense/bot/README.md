@@ -5,6 +5,7 @@ it holds WASD to dodge, moves the mouse to aim and holds left click to shoot.
 
 - **`*`** starts it (Shift+8 or numpad `*`)
 - **`-`** stops it
+- **`/`** saves a screenshot of what the bot sees (you keep playing; see below)
 - It **stops by itself** when your player disappears (you died)
 - It only sends keys/mouse while the **Roblox window is in front**, so it won't type into other apps
 
@@ -52,6 +53,16 @@ If something isn't circled, or wrong things are, calibrate that thing again.
 
 ## Run
 Go to Roblox, start a run and press **`*`** (or click Start). Press **`-`** to stop.
+
+## Screenshots (`/`)
+Press **`/`** (or numpad `/`) anytime, with the bot running or not. Nothing pauses: it saves into the
+`screenshots` folder next to SwarmBot.exe (**Open screenshots folder** in the app):
+- `shot_<time>.png`: the play area as the bot captured it
+- `shot_<time>_bot.png`: the same with everything the bot detected circled, a white circle on what it
+  thinks is **you**, the keys it's holding (top bar) and a yellow line to where it's aiming
+- `shot_<time>.json`: the same info as numbers
+
+If the bot misbehaves (e.g. keeps running to one side), send these; they show exactly what it saw.
 
 ## Tuning (`config.json`, created by calibrate)
 | Setting | What it does |
