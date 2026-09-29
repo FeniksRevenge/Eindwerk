@@ -21,7 +21,7 @@ import cv2
 import mss
 import numpy as np
 
-from phototrainer import train_semi
+from phototrainer import list_photos, train_semi
 from runner import BotRunner
 from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, measure_blob
 
@@ -195,6 +195,7 @@ def save_config(cfg):
     cfg.setdefault("death_timeout", 4.0)
     cfg.setdefault("require_focus", True)
     cfg.setdefault("fire_with", "space")
+    cfg.setdefault("auto_shot_every", 10)
     with CONFIG_LOCK:
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w") as f:
@@ -382,6 +383,7 @@ class BotController:
 
     def _loop(self):
         bot = None
+        auto_every, next_auto = 0, 0.0
         frames, fps_t = 0, time.perf_counter()
         last_status = None
         while not self._quit.is_set():
@@ -398,6 +400,8 @@ class BotController:
                                                           cfg.get("fire_with", "space")))
                         self.running = True
                         last_status = None
+                        auto_every = float(cfg.get("auto_shot_every", 10))
+                        next_auto = time.perf_counter() + auto_every
                         self.on_event("status", "Running")
                         self.on_event("log", "Started.")
                     except Exception as e:
@@ -428,6 +432,11 @@ class BotController:
                 self.on_event("log", f"Player gone for {bot.death_timeout:.0f}s: died after {bot.run_seconds():.0f}s. "
                                      "Stopped. Press * to start again.")
                 continue
+            # Periodic photos for the photo trainer (capped so the folder can't fill the disk).
+            if auto_every > 0 and status == "ok" and time.perf_counter() >= next_auto:
+                next_auto = time.perf_counter() + auto_every
+                if len(list_photos(SHOTS_DIR)) < 300 if os.path.isdir(SHOTS_DIR) else True:
+                    self._take_screenshot(bot)
             shown = "Waiting for the player to appear..." if status == "waiting" else "Running"
             if shown != last_status:
                 self.on_event("status", shown)

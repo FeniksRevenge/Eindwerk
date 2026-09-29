@@ -189,13 +189,14 @@ class Detector:
 
 
 class Track:
-    __slots__ = ("x", "y", "vx", "vy", "r", "kind", "age", "missing")
+    __slots__ = ("x", "y", "vx", "vy", "r", "kind", "age", "missing", "vmax")
 
     def __init__(self, x, y, r, kind, vx=0.0, vy=0.0):
         self.x, self.y, self.r, self.kind = x, y, r, kind
         self.vx, self.vy = vx, vy
         self.age = 0
         self.missing = 0
+        self.vmax = 0.0  # fastest it has recently moved (e.g. the boss's rush), fades slowly
 
 
 class Tracker:
@@ -226,6 +227,7 @@ class Tracker:
                         t.vx = (1 - a) * t.vx + a * (x - t.x) / dt
                         t.vy = (1 - a) * t.vy + a * (y - t.y) / dt
                     t.x, t.y, t.r = x, y, r
+                    t.vmax = max(math.hypot(t.vx, t.vy), t.vmax * 0.995)
                     t.age += 1
                     t.missing = 0
                     new_tracks.append(t)

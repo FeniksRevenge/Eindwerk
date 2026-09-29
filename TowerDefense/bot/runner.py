@@ -48,22 +48,29 @@ class BotRunner:
         self.last_keys = ()
 
     def _pick_player(self, candidates, now):
-        self.bad_spots = [b for b in self.bad_spots if b[2] > now]
-        candidates = [c for c in candidates
-                      if not any(math.hypot(c[0] - bx, c[1] - by) < c[2] + 4 for bx, by, _ in self.bad_spots)]
+        """Which gray blob is the player. Returns (x, y, r) or None."""
         if not candidates:
             return None
-        if self.player is not None:
-            # Follow the blob closest to where the player was.
-            px, py, pr = self.player
-            best = min(candidates, key=lambda b: math.hypot(b[0] - px, b[1] - py))
-            if math.hypot(best[0] - px, best[1] - py) <= 6 * max(pr, 1) + 50:
-                return best
-            return None
-        # First sighting: the blob whose size best matches the calibrated player size.
-        if self.player_radius:
-            return min(candidates, key=lambda b: abs(math.log(max(b[2], 0.5) / self.player_radius)))
-        return max(candidates, key=lambda b: b[2])
+        self.bad_spots = [b for b in self.bad_spots if b[2] > now]
+        good = [c for c in candidates
+                if not any(math.hypot(c[0] - bx, c[1] - by) < c[2] + 4 for bx, by, _ in self.bad_spots)]
+        if not good:
+            # Everything player-sized is blacklisted: the blacklist was wrong, drop it.
+            self.bad_spots = []
+            good = candidates
+        by_size = (lambda b: abs(math.log(max(b[2], 0.5) / self.player_radius))) if self.player_radius \
+            else (lambda b: -b[2])
+        if self.player is None:
+            return min(good, key=by_size)
+        # Follow the blob closest to where the player was.
+        px, py, pr = self.player
+        best = min(good, key=lambda b: math.hypot(b[0] - px, b[1] - py))
+        if math.hypot(best[0] - px, best[1] - py) <= 6 * max(pr, 1) + 50:
+            return best
+        # Nothing near the old spot. After a short blink (hit flash), look for it anywhere.
+        if self.missing_time > 0.2:
+            return min(good, key=by_size)
+        return None
 
     def step(self):
         """One tick. Returns "ok", "waiting" (player not seen yet) or "dead"."""
@@ -99,9 +106,12 @@ class BotRunner:
             # Holding keys but "the player" doesn't move and isn't at a wall: it's probably
             # something static (HUD text, a button). Forget it and look for the real one.
             near_wall = min(x, w - x, y, h - y) < 3 * r
-            self.stuck_time = self.stuck_time + dt if (moved < r * 0.5 and not near_wall) else 0.0
+            # Only when there's another candidate: if it's the only gray ball it IS the player
+            # (just pinned, e.g. by the boss), and ignoring it would make the bot think it died.
+            alternatives = len(dets["player"]) > 1
+            self.stuck_time = self.stuck_time + dt if (moved < r * 0.5 and not near_wall and alternatives) else 0.0
             if self.stuck_time > 1.0:
-                self.bad_spots.append((x, y, now + 15))
+                self.bad_spots.append((x, y, now + 8))
                 self.notes.append(f"Player not moving at ({x:.0f}, {y:.0f}); probably not the player, looking again.")
                 self.player = None
                 self.stuck_time = 0.0

@@ -100,6 +100,9 @@ Press **`/`** (or numpad `/`) anytime, with the bot running or not. Nothing paus
 
 If the bot misbehaves (e.g. keeps running to one side), send these; they show exactly what it saw.
 
+While the bot runs it also takes a photo **automatically every 10 seconds** (setting in the app, 0 = off;
+it stops adding automatic photos once 300 are waiting). Train on them afterwards with the photo trainer.
+
 ## Tuning (`config.json`, created by calibrate)
 | Setting | What it does |
 |---------|--------------|

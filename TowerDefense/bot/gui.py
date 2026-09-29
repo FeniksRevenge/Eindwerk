@@ -143,6 +143,11 @@ class App:
 
         grid = tk.Frame(wrap, bg=BG)
         grid.pack(fill="x")
+        tk.Label(grid, text="Auto screenshot every (s, 0 = off)", bg=BG, fg=FG, font=FONT).grid(
+            row=3, column=0, sticky="w", pady=(6, 0))
+        self.auto_var = tk.DoubleVar(value=cfg.get("auto_shot_every", 10))
+        ttk.Spinbox(grid, from_=0, to=120, increment=5, textvariable=self.auto_var, width=6,
+                    command=self.save_settings).grid(row=3, column=1, sticky="e", pady=(6, 0))
         tk.Label(grid, text="Shoot with", bg=BG, fg=FG, font=FONT).grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.fire_var = tk.StringVar(value="Space" if cfg.get("fire_with", "space") == "space" else "Left mouse")
         fire_box = ttk.Combobox(grid, textvariable=self.fire_var, values=["Space", "Left mouse"], state="readonly", width=12)
@@ -326,11 +331,13 @@ class App:
             return
         try:
             death = float(self.death_var.get())
+            auto_every = max(0.0, float(self.auto_var.get()))
         except (tk.TclError, ValueError):
             return
         v = int(self.tol_var.get())
         new = {"require_focus": bool(self.focus_var.get()), "death_timeout": death,
                "fire_with": "space" if self.fire_var.get() == "Space" else "mouse",
+               "auto_shot_every": auto_every,
                "tolerance": [round(v * 30 / 14), v, v]}
         if any(cfg.get(k) != val for k, val in new.items()):
             cfg.update(new)

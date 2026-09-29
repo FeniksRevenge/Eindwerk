@@ -30,6 +30,7 @@ FAST = 250.0  # game units/s: an "orange shooter" moving faster than this is rea
 class Brain:
     BULLET_MARGIN = 22
     MOB_MARGIN = 60
+    BOSS_MARGIN = 260   # extra distance to keep from the boss (it rushes)
     CROWD_WEIGHT = 2500
     WALL_MARGIN = 140
     WALL_WEIGHT = 0.35
@@ -42,6 +43,15 @@ class Brain:
                 setattr(self, name, float(value))
         self.prev = np.zeros(2)
         self.orbit_dir = 1
+
+    @staticmethod
+    def _mob_speed(t, k, player_speed):
+        """Speed to assume for a mob, in game units/s. The boss is assumed to be able to rush."""
+        base = DEFAULT_MOB_SPEED[t.kind]
+        measured = math.hypot(t.vx, t.vy) / k if t.age > 3 else base * 1.2
+        if t.kind == "boss":
+            return max(measured, t.vmax / k, 0.7 * player_speed)
+        return max(measured, base * 0.8)
 
     def _leg(self, start, t0, steps, speed, W, H, pr, mobs, bullets):
         """Danger of running straight in each of the 9 directions from each start point.
@@ -57,7 +67,8 @@ class Brain:
             bp = bullets["pos"][None] + bullets["vel"][None] * T[:, None, None]          # (S, B, 2)
             gap = np.linalg.norm(P[:, :, :, None, :] - bp[None, None], axis=-1) - pr - bullets["r"]
             m = self.BULLET_MARGIN
-            c = np.where(gap < 0, 20000.0, np.where(gap < m, (m - np.maximum(gap, 0)) ** 2 * 4, 0.0))
+            near = (m - np.maximum(gap, 0)) ** 2 * 4
+            c = np.where(gap < 0, 20000.0 + m * m * 4, np.where(gap < m, near, 0.0))  # a hit always costs more than a near miss
             cost += (c * urg).sum(axis=(2, 3))
 
         if len(mobs["pos"]):
@@ -69,8 +80,9 @@ class Brain:
             drift = mp[None] + mobs["vel"][None] * T[:, None, None]                        # (S, M, 2)
             pos = np.where(mobs["chaser"][:, None], chase, drift[None, None])
             gap = np.linalg.norm(P[:, :, :, None, :] - pos, axis=-1) - pr - mobs["r"]
-            m = self.MOB_MARGIN
-            c = np.where(gap < 0, 20000.0, np.where(gap < m, (m - np.maximum(gap, 0)) ** 2 * 1.5, 0.0))
+            m = mobs["margin"]
+            near = (m - np.maximum(gap, 0)) ** 2 * 1.5
+            c = np.where(gap < 0, 20000.0 + m * m * 1.5, np.where(gap < m, near, 0.0))
             cost += (c * urg).sum(axis=(2, 3))
         return cost, P[:, :, -1, :]
 
@@ -101,8 +113,8 @@ class Brain:
             "pos": np.array([[t.x / k, t.y / k] for t in mob_t]).reshape(-1, 2),
             "vel": np.array([[t.vx / k, t.vy / k] for t in mob_t]).reshape(-1, 2),
             "r": np.array([t.r / k for t in mob_t]),
-            "speed": np.array([max(math.hypot(t.vx, t.vy) / k, DEFAULT_MOB_SPEED[t.kind] * 0.8) if t.age > 3
-                               else DEFAULT_MOB_SPEED[t.kind] * 1.2 for t in mob_t]),
+            "speed": np.array([self._mob_speed(t, k, speed) for t in mob_t]),
+            "margin": np.array([self.MOB_MARGIN + (self.BOSS_MARGIN if t.kind == "boss" else 0) for t in mob_t]),
             # Shooters (orange, yellow) keep their distance, so predict them by their own movement.
             "chaser": np.array([t.kind not in ("shooter", "runner") for t in mob_t], dtype=bool),
             "weight": np.array([3.6 if t.kind == "boss" else 1.0 for t in mob_t]),
@@ -122,7 +134,17 @@ class Brain:
                          u / rho * B * self.orbit_dir + v / rho * (1 - rho) * 700])
         pref /= np.linalg.norm(pref) or 1
         pull = self.ORBIT_WEIGHT
-        if pickups:
+        bosses = [t for t in mob_t if t.kind == "boss"]
+        boss = min(bosses, key=lambda t: math.hypot(t.x - px, t.y - py)) if bosses else None
+        if boss is not None and math.hypot(boss.x - px, boss.y - py) / k < 700:
+            # Boss nearby: circle away from it instead of running laps through the middle.
+            away = np.array([p[0] - boss.x / k, p[1] - boss.y / k])
+            away /= np.linalg.norm(away) or 1
+            tangent = np.array([-away[1], away[0]]) * self.orbit_dir
+            pref = away + 0.6 * tangent
+            pref /= np.linalg.norm(pref)
+            pull = self.ORBIT_WEIGHT * 2
+        elif pickups:
             # Go get the nearest green health circle; the danger checks still keep it safe on the way.
             hp = min(pickups, key=lambda t: math.hypot(t.x - px, t.y - py))
             to = np.array([hp.x / k - p[0], hp.y / k - p[1]])
