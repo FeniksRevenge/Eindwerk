@@ -12,8 +12,9 @@ import cv2
 import numpy as np
 
 # Things the calibration asks you to click on, in this order.
-CLASSES = ["player", "enemy_bullet", "shooter_bullet", "grunt", "shooter", "tank", "tank_mini", "boss",
-           "health", "runner"]
+CLASSES = ["player", "enemy_bullet", "shooter_bullet", "yellow_bullet", "grunt", "shooter", "runner", "tank",
+           "tank_mini", "boss", "health"]
+BULLET_CLASSES = ("enemy_bullet", "shooter_bullet", "yellow_bullet")
 MOB_KINDS = ["grunt", "runner", "shooter", "tank", "tank_mini", "boss"]
 CLASS_HELP = {
     "player": "YOU (the gray ball)",
@@ -25,7 +26,8 @@ CLASS_HELP = {
     "tank_mini": "one of the TINY mobs that come out of a dead tank",
     "boss": "the BOSS (red cross)",
     "health": "a GREEN health circle",
-    "runner": "a YELLOW mob (skip if the game has none)",
+    "runner": "the YELLOW mob (the one that shoots in all directions)",
+    "yellow_bullet": "a bullet from the YELLOW mob",
 }
 
 DEFAULT_TOLERANCE = [30, 14, 14]  # allowed difference in L, a, b (OpenCV 8-bit Lab)
@@ -155,12 +157,12 @@ class Detector:
                 smallest = min(m[1] for m in members)
                 if r < smallest * 0.45:
                     continue  # specks and explosion particles
-                if name in ("enemy_bullet", "shooter_bullet", "player") and r > r_exp * 2:
+                if (name in BULLET_CLASSES or name == "player") and r > r_exp * 2:
                     continue
                 if name == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
                     continue  # HUD text is gray too, but much smaller than the player
-                if name == "shooter_bullet":
-                    name = "enemy_bullet"
+                if name in BULLET_CLASSES:
+                    name = "enemy_bullet"  # all bullets are dodged the same way
                 out[name].append((x, y, r))
         return out
 
@@ -225,6 +227,7 @@ class Tracker:
 
 
 DRAW_COLORS = {"player": (140, 230, 120), "enemy_bullet": (80, 80, 255), "shooter_bullet": (80, 80, 255),
+               "yellow_bullet": (80, 80, 255),
                "grunt": (60, 60, 230), "runner": (90, 220, 230), "shooter": (50, 150, 255),
                "tank": (200, 80, 160), "tank_mini": (230, 120, 200), "boss": (200, 40, 200),
                "health": (80, 255, 80)}

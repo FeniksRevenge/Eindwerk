@@ -23,7 +23,7 @@ STEPS2 = np.arange(1, 9) * 0.05    # follow-up move: another 0.4 s
 
 # Default speeds in game units per second (used until the real ones have been measured).
 DEFAULT_PLAYER_SPEED = 260.0
-DEFAULT_MOB_SPEED = {"grunt": 70.0, "runner": 135.0, "tank": 42.0, "tank_mini": 110.0, "shooter": 105.0, "boss": 48.0}
+DEFAULT_MOB_SPEED = {"grunt": 70.0, "runner": 90.0, "tank": 42.0, "tank_mini": 110.0, "shooter": 105.0, "boss": 48.0}
 FAST = 250.0  # game units/s: an "orange shooter" moving faster than this is really an orange bullet
 
 
@@ -35,8 +35,11 @@ class Brain:
     WALL_WEIGHT = 0.35
     ORBIT_WEIGHT = 150
 
-    def __init__(self, bullet_speed=820.0):
+    def __init__(self, bullet_speed=820.0, params=None):
         self.bullet_speed = bullet_speed  # speed of YOUR bullets, game units/s (for leading shots)
+        for name, value in (params or {}).items():  # trained values (see trainer.py)
+            if hasattr(Brain, name):
+                setattr(self, name, float(value))
         self.prev = np.zeros(2)
         self.orbit_dir = 1
 
@@ -100,7 +103,8 @@ class Brain:
             "r": np.array([t.r / k for t in mob_t]),
             "speed": np.array([max(math.hypot(t.vx, t.vy) / k, DEFAULT_MOB_SPEED[t.kind] * 0.8) if t.age > 3
                                else DEFAULT_MOB_SPEED[t.kind] * 1.2 for t in mob_t]),
-            "chaser": np.array([t.kind != "shooter" for t in mob_t], dtype=bool),
+            # Shooters (orange, yellow) keep their distance, so predict them by their own movement.
+            "chaser": np.array([t.kind not in ("shooter", "runner") for t in mob_t], dtype=bool),
             "weight": np.array([3.6 if t.kind == "boss" else 1.0 for t in mob_t]),
         }
         bullets = {
@@ -146,7 +150,7 @@ class Brain:
             gap = (math.hypot(t.x - px, t.y - py) - t.r) / k
             if t.kind == "boss":
                 score = gap / 80 + 1
-            elif t.kind == "shooter":
+            elif t.kind in ("shooter", "runner"):  # they shoot back, so take them out early
                 score = gap / 150 * 0.5
             else:
                 score = gap / DEFAULT_MOB_SPEED[t.kind]

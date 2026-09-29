@@ -22,6 +22,7 @@ import mss
 import numpy as np
 
 from runner import BotRunner
+from trainer import Trainer
 from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, measure_blob
 
 # When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
@@ -29,6 +30,8 @@ FROZEN = getattr(sys, "frozen", False)
 HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 SHOTS_DIR = os.path.join(HERE, "screenshots")
+TRAINING_LOG = os.path.join(HERE, "training_log.csv")
+CONFIG_LOCK = threading.RLock()  # the bot thread and the app both write config.json
 
 # Make screen coordinates real pixels even with Windows display scaling (125%, 150%...).
 try:
@@ -193,8 +196,20 @@ def save_config(cfg):
     cfg.setdefault("death_timeout", 1.5)
     cfg.setdefault("require_focus", True)
     cfg.setdefault("fire_with", "space")
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    with CONFIG_LOCK:
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+
+
+def update_training(fn):
+    """Load config, let fn(trainer) change the training state, save. Returns fn's result."""
+    with CONFIG_LOCK:
+        cfg = read_config_or_empty()
+        result = fn(Trainer(cfg, TRAINING_LOG))
+        save_config(cfg)
+        return result
 
 
 def apply_preset():
@@ -388,12 +403,13 @@ class BotController:
                 if not self.running:
                     try:
                         cfg = load_config()  # re-read, in case calibration changed it
+                        trainer_mode, params = update_training(lambda t: (t.mode, t.params_for_next_run()))
                         bot = BotRunner(cfg, WindowsIO(cfg["region"], cfg.get("require_focus", True),
-                                                          cfg.get("fire_with", "space")))
+                                                          cfg.get("fire_with", "space")), params)
                         self.running = True
                         last_status = None
                         self.on_event("status", "Running")
-                        self.on_event("log", "Started.")
+                        self.on_event("log", "Started." + (f" Training ({trainer_mode})." if trainer_mode != "off" else ""))
                     except Exception as e:
                         self.on_event("log", f"Can't start: {e}")
             if self._stop.is_set():
@@ -420,6 +436,7 @@ class BotController:
                 self.running = False
                 self.on_event("status", "Stopped (died)")
                 self.on_event("log", "Player disappeared (died?), stopped. Press * to start again.")
+                self._finish_run(bot.run_seconds())
                 continue
             shown = "Waiting for the player to appear..." if status == "waiting" else "Running"
             if shown != last_status:
@@ -432,6 +449,20 @@ class BotController:
         if bot is not None:
             bot.release()
 
+
+    def _finish_run(self, seconds):
+        try:
+            msg, ask = update_training(lambda t: t.run_finished(seconds))
+        except Exception as e:
+            self.on_event("log", f"Training error: {e}")
+            return
+        self.on_event("log", msg)
+        if ask:
+            self.on_event("ask", msg)
+
+    def answer(self, keep):
+        """Semi-auto training: your verdict on the settings just tried."""
+        self.on_event("log", update_training(lambda t: t.decide(keep)))
 
     def _take_screenshot(self, bot):
         """Grab what the bot sees right now and save it on another thread, so play isn't interrupted."""

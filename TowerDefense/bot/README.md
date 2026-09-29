@@ -51,9 +51,9 @@ Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
 3. Drag a box around the **play area** (the whole game screen) and press Enter.
 4. Click on each thing it asks for. Press **S** to skip something that isn't on screen, **R** to redo a click.
    It asks for, in order: the **gray ball** (you), a **red bullet** (boss), an **orange bullet** (shooter),
-   the **red square** (basic mob), the **orange ball** (shooter, not its ring), a **purple tank**, one of the
-   **tiny mobs** a dead tank splits into, the **red cross** (boss), a **green health circle**, and a yellow
-   runner (skip it if the game has none).
+   a **yellow mob's bullet**, the **red square** (basic mob), the **orange ball** (shooter, not its ring),
+   the **yellow mob** (shoots in all directions), a **purple tank**, one of the **tiny mobs** a dead tank
+   splits into, the **red cross** (boss) and a **green health circle**.
 
 The bot walks over green health circles when it's safe to, and dodges both red and orange bullets.
 
@@ -69,6 +69,17 @@ If something isn't circled, or wrong things are, calibrate that thing again.
 
 ## Run
 Go to Roblox, start a run and press **`*`** (or click Start). Press **`-`** to stop.
+
+## Training (learns from its runs)
+The bot's dodging is steered by a few numbers (how close bullets and mobs may get, how much it avoids
+crowds and walls, how much it runs laps). In the app, **Training → Learn from runs**:
+- **Off**: uses the best settings found so far.
+- **Semi-auto (ask me)**: every run tries a small change; when the run ends it tells you how long you
+  survived and asks **Keep these settings?** Yes keeps the change, No throws it away.
+- **Auto**: every change is played for 2 runs and kept if the average run lasts longer than the best so far.
+
+Only runs that end in death count (stopping with `-` doesn't). Start each run with `*`.
+**Reset** goes back to the default settings. Every decision is written to `training_log.csv`.
 
 ## Screenshots (`/`)
 Press **`/`** (or numpad `/`) anytime, with the bot running or not. Nothing pauses: it saves into the

@@ -1,4 +1,6 @@
 config.json
+config.json.tmp
 __pycache__/
 screenshots/
 selftest.txt
+training_log.csv

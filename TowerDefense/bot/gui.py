@@ -11,9 +11,10 @@ import queue
 import subprocess
 import sys
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
-from swarm_bot import CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset
+from swarm_bot import (CONFIG_LOCK, CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset,
+                       save_config, update_training)
 from vision import CLASSES, DEFAULT_TOLERANCE
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # source folder (not used when frozen)
@@ -50,8 +51,7 @@ def read_config():
 
 
 def write_config(cfg):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    save_config(cfg)
 
 
 class App:
@@ -160,6 +160,23 @@ class App:
         grid.bind_all("<ButtonRelease-1>", lambda _e: self.save_settings(), add="+")
         grid.columnconfigure(0, weight=1)
 
+        # --- training ----------------------------------------------------------
+        self._section(wrap, "TRAINING", top=12)
+        trow = tk.Frame(wrap, bg=BG)
+        trow.pack(fill="x")
+        tk.Label(trow, text="Learn from runs", bg=BG, fg=FG, font=FONT).pack(side="left")
+        modes = {"off": "Off", "semi": "Semi-auto (ask me)", "auto": "Auto"}
+        self.mode_names = modes
+        self.train_var = tk.StringVar(value=modes.get((cfg.get("training") or {}).get("mode", "off"), "Off"))
+        tbox = ttk.Combobox(trow, textvariable=self.train_var, values=list(modes.values()), state="readonly", width=18)
+        tbox.pack(side="left", padx=8)
+        tbox.bind("<<ComboboxSelected>>", lambda _e: self.set_training_mode())
+        ttk.Button(trow, text="Reset", command=self.reset_training).pack(side="left")
+        self.train_info = tk.StringVar()
+        tk.Label(wrap, textvariable=self.train_info, bg=BG, fg=MUTED, font=FONT, justify="left",
+                 wraplength=400).pack(anchor="w", pady=(6, 0))
+        self.refresh_training()
+
         # --- log -------------------------------------------------------------
         self._section(wrap, "LOG", top=12)
         self.log = tk.Text(wrap, height=7, width=52, bg=PANEL, fg=FG, font=MONO, relief="flat",
@@ -167,6 +184,10 @@ class App:
         self.log.pack(fill="x")
 
         self.refresh_calibration()
+        cfg_now = read_config() or {}
+        if cfg_now.get("colors") and "preset" not in cfg_now:
+            self.write_log("Your colors come from an older calibration that can mistake the background for a mob. "
+                           "Click 'Use preset colors' to replace them.")
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(50, self.poll)
 
@@ -243,6 +264,29 @@ class App:
         self.proc = subprocess.Popen(cmd, cwd=os.path.dirname(CONFIG_PATH))
         self.write_log(f"Opened {' '.join(args)} in a new window.")
 
+    def set_training_mode(self):
+        mode = {v: k for k, v in self.mode_names.items()}[self.train_var.get()]
+        update_training(lambda t: t.t.update({"mode": mode}))
+        self.write_log({"off": "Training off: the bot uses its best settings so far.",
+                        "semi": "Semi-auto: after each run you decide whether the tried change is kept.",
+                        "auto": "Auto: each change is played for 2 runs and kept if runs last longer."}[mode])
+        self.refresh_training()
+
+    def reset_training(self):
+        if messagebox.askyesno("Reset training", "Forget everything the bot learned and go back to the default settings?"):
+            update_training(lambda t: t.reset())
+            self.write_log("Training reset to default settings.")
+            self.refresh_training()
+
+    def refresh_training(self):
+        t = (read_config() or {}).get("training") or {}
+        best = t.get("best_score")
+        text = f"Best settings survive {best:.0f}s on average ({t.get('best_runs', 0)} runs)." if best \
+            else "No runs recorded yet. Every run that ends in death counts; stopping with - doesn't."
+        if t.get("candidate") and t.get("mode", "off") != "off":
+            text += f"\nTrying a change ({len(t.get('cand_scores', []))} run(s) so far)."
+        self.train_info.set(text)
+
     def use_preset(self):
         has_region = apply_preset()
         self.write_log("Preset colors applied (measured from your screenshots)." +
@@ -265,6 +309,10 @@ class App:
             self.write_log(f"Screenshots are in {SHOTS_DIR}")
 
     def save_settings(self):
+        with CONFIG_LOCK:
+            self._save_settings()
+
+    def _save_settings(self):
         cfg = read_config()
         if not cfg:
             return
@@ -290,8 +338,14 @@ class App:
                 self.set_status(text)
             elif kind == "fps":
                 self.fps_var.set(f"{text} fps")
+            elif kind == "ask":
+                keep = messagebox.askyesno("Keep these settings?", text, parent=self.root)
+                self.ctl.answer(keep)
+                self.refresh_training()
             else:
                 self.write_log(text)
+                if text.startswith(("Run ", "Kept", "Reverted")):
+                    self.refresh_training()
         if self.proc and self.proc.poll() is not None:
             self.proc = None
             self.refresh_calibration()

@@ -10,9 +10,10 @@ from vision import Detector, Tracker
 
 
 class BotRunner:
-    def __init__(self, cfg, io):
+    def __init__(self, cfg, io, params=None):
         self.cfg = cfg
         self.io = io
+        self.params = params  # Brain settings (from training), or None for defaults
         self.detector = Detector(cfg)
         self.death_timeout = float(cfg.get("death_timeout", 1.0))
         self.player_radius = float((cfg.get("colors", {}).get("player") or {}).get("radius", 0)) or None
@@ -20,7 +21,7 @@ class BotRunner:
 
     def reset(self):
         self.tracker = Tracker()
-        self.brain = Brain(bullet_speed=float(self.cfg.get("bullet_speed", 820)))
+        self.brain = Brain(bullet_speed=float(self.cfg.get("bullet_speed", 820)), params=self.params)
         self.player = None
         self.player_speed = None  # measured, in screen pixels per second
         self.last_keys = ()
@@ -31,6 +32,14 @@ class BotRunner:
         self.bad_spots = []  # [(x, y, until_time)]: static things mistaken for the player
         self.notes = []      # messages for the log, collected by the caller
         self.last = None     # everything from the latest tick, for screenshots
+        self.first_seen = None  # time the player was first seen this run
+        self.last_seen = None
+
+    def run_seconds(self):
+        """How long the player survived this run (first to last sighting)."""
+        if self.first_seen is None:
+            return 0.0
+        return self.last_seen - self.first_seen
 
     def release(self):
         self.io.set_keys(())
@@ -74,6 +83,9 @@ class BotRunner:
             return "waiting" if not self.seen_player else "ok"
         self.missing_time = 0.0
         self.seen_player = True
+        if self.first_seen is None:
+            self.first_seen = now
+        self.last_seen = now
         x, y, r = found
 
         if self.player is not None and self.last_keys:
