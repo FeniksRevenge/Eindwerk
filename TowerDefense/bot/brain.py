@@ -23,7 +23,8 @@ STEPS2 = np.arange(1, 9) * 0.05    # follow-up move: another 0.4 s
 
 # Default speeds in game units per second (used until the real ones have been measured).
 DEFAULT_PLAYER_SPEED = 260.0
-DEFAULT_MOB_SPEED = {"grunt": 70.0, "runner": 135.0, "tank": 42.0, "shooter": 105.0, "boss": 48.0}
+DEFAULT_MOB_SPEED = {"grunt": 70.0, "runner": 135.0, "tank": 42.0, "tank_mini": 110.0, "shooter": 105.0, "boss": 48.0}
+FAST = 250.0  # game units/s: an "orange shooter" moving faster than this is really an orange bullet
 
 
 class Brain:
@@ -90,8 +91,9 @@ class Brain:
         pr = REF_R
         speed = player_speed / k
 
-        mob_t = [t for t in tracks if t.kind != "enemy_bullet"]
+        mob_t = [t for t in tracks if t.kind in DEFAULT_MOB_SPEED]
         bul_t = [t for t in tracks if t.kind == "enemy_bullet"]
+        pickups = [t for t in tracks if t.kind == "health"]
         mobs = {
             "pos": np.array([[t.x / k, t.y / k] for t in mob_t]).reshape(-1, 2),
             "vel": np.array([[t.vx / k, t.vy / k] for t in mob_t]).reshape(-1, 2),
@@ -115,12 +117,20 @@ class Brain:
         pref = np.array([-v / rho * A * self.orbit_dir + u / rho * (1 - rho) * 700,
                          u / rho * B * self.orbit_dir + v / rho * (1 - rho) * 700])
         pref /= np.linalg.norm(pref) or 1
+        pull = self.ORBIT_WEIGHT
+        if pickups:
+            # Go get the nearest green health circle; the danger checks still keep it safe on the way.
+            hp = min(pickups, key=lambda t: math.hypot(t.x - px, t.y - py))
+            to = np.array([hp.x / k - p[0], hp.y / k - p[1]])
+            if np.linalg.norm(to) > 1:
+                pref = to / np.linalg.norm(to)
+                pull = self.ORBIT_WEIGHT * 3
 
         c1, end1 = self._leg(p[None], 0.0, STEPS1, speed, W, H, pr, mobs, bullets)
         c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, mobs, bullets)
         follow = (c2 * 0.7 + self._spot(end2, W, H, mobs)).min(axis=1)
         total = c1[0] + follow
-        total += (1 - DIRS @ pref) * self.ORBIT_WEIGHT
+        total += (1 - DIRS @ pref) * pull
         moving = np.any(DIRS != 0, axis=1)
         total += np.where(moving, (1 - DIRS @ self.prev) * 12, 0)
         best = int(np.argmin(total))
@@ -131,6 +141,8 @@ class Brain:
         for t in mob_t:
             if not (0 <= t.x <= width and 0 <= t.y <= height):
                 continue
+            if t.kind == "shooter" and t.age > 2 and math.hypot(t.vx, t.vy) / k > FAST:
+                continue  # an orange bullet, not worth shooting at
             gap = (math.hypot(t.x - px, t.y - py) - t.r) / k
             if t.kind == "boss":
                 score = gap / 80 + 1

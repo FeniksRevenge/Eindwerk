@@ -41,8 +41,12 @@ Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
 2. Press Enter in the calibration window, switch to Roblox within 5 seconds. It takes a screenshot.
 3. Drag a box around the **play area** (the whole game screen) and press Enter.
 4. Click on each thing it asks for. Press **S** to skip something that isn't on screen, **R** to redo a click.
-   Click the **gray ball** for the player, the **red square** for the basic mob, a **red circle** for the bullets,
-   the **orange ball** (not the ring) for the shooter, and the **red cross** for the boss.
+   It asks for, in order: the **gray ball** (you), a **red bullet** (boss), an **orange bullet** (shooter),
+   the **red square** (basic mob), the **orange ball** (shooter, not its ring), a **purple tank**, one of the
+   **tiny mobs** a dead tank splits into, the **red cross** (boss), a **green health circle**, and a yellow
+   runner (skip it if the game has none).
+
+The bot walks over green health circles when it's safe to, and dodges both red and orange bullets.
 
 Missed the boss? Use **Redo one → boss** in the app later with the boss on screen (keeps everything else).
 

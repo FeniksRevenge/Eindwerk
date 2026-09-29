@@ -12,17 +12,20 @@ import cv2
 import numpy as np
 
 # Things the calibration asks you to click on, in this order.
-CLASSES = ["player", "enemy_bullet", "shooter_bullet", "grunt", "runner", "shooter", "tank", "boss"]
-MOB_KINDS = ["grunt", "runner", "shooter", "tank", "boss"]
+CLASSES = ["player", "enemy_bullet", "shooter_bullet", "grunt", "shooter", "tank", "tank_mini", "boss",
+           "health", "runner"]
+MOB_KINDS = ["grunt", "runner", "shooter", "tank", "tank_mini", "boss"]
 CLASS_HELP = {
-    "player": "YOU (the player ball)",
-    "enemy_bullet": "an ENEMY BULLET (e.g. the boss's red circles)",
-    "shooter_bullet": "a bullet from the ORANGE shooter (skip if it looks the same as the other bullets)",
-    "grunt": "a RED mob (grunt)",
-    "runner": "a YELLOW mob (runner)",
-    "shooter": "an ORANGE mob (shooter)",
-    "tank": "a BLUE mob (tank)",
-    "boss": "the BOSS",
+    "player": "YOU (the gray ball)",
+    "enemy_bullet": "a RED bullet (the boss's red balls)",
+    "shooter_bullet": "an ORANGE bullet (from the orange shooter)",
+    "grunt": "the RED square (basic mob)",
+    "shooter": "the ORANGE ball (shooter, not its ring)",
+    "tank": "a PURPLE tank",
+    "tank_mini": "one of the TINY mobs that come out of a dead tank",
+    "boss": "the BOSS (red cross)",
+    "health": "a GREEN health circle",
+    "runner": "a YELLOW mob (skip if the game has none)",
 }
 
 DEFAULT_TOLERANCE = [30, 14, 14]  # allowed difference in L, a, b (OpenCV 8-bit Lab)
@@ -73,7 +76,7 @@ class Detector:
                 groups.setdefault(tuple(c["lab"]), []).append((name, float(c["radius"])))
         self.groups = list(groups.items())
 
-    def blobs(self, lab_img, lab):
+    def blobs(self, lab_img, lab, min_fill=0.3):
         """(x, y, radius) of every roughly solid blob of this color, in downscaled pixels."""
         mask = color_mask(lab_img, lab, self.tol)
         n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
@@ -82,7 +85,7 @@ class Detector:
             bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
             area = stats[i, cv2.CC_STAT_AREA]
             # Skip thin lines (the aim line) and text-like shapes: real things fill their box.
-            if max(bw, bh) > 3 * max(1, min(bw, bh)) or area < 0.3 * bw * bh:
+            if max(bw, bh) > 3 * max(1, min(bw, bh)) or area < min_fill * bw * bh:
                 continue
             out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0))
         return out
@@ -94,7 +97,9 @@ class Detector:
         lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
         out = {name: [] for name in CLASSES}
         for lab_c, members in self.groups:
-            for (x, y, r) in self.blobs(lab, lab_c):
+            # Health pickups may be drawn as a ring, so allow hollow shapes for them.
+            min_fill = 0.08 if any(m[0] == "health" for m in members) else 0.3
+            for (x, y, r) in self.blobs(lab, lab_c, min_fill):
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
                 name, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
@@ -130,7 +135,7 @@ class Tracker:
     def update(self, dets, dt, player_xy, max_speed, new_bullet_speed):
         px, py = player_xy
         new_tracks = []
-        for kind in MOB_KINDS + ["enemy_bullet"]:
+        for kind in MOB_KINDS + ["enemy_bullet", "health"]:
             old = [t for t in self.tracks if t.kind == kind]
             used = set()
             for (x, y, r) in dets.get(kind, []):
@@ -155,7 +160,7 @@ class Tracker:
                 else:
                     # Brand new thing. A new bullet is almost always flying at the player.
                     vx = vy = 0.0
-                    if kind == "enemy_bullet":
+                    if kind == "enemy_bullet":  # health pickups stay put
                         d = math.hypot(px - x, py - y) or 1.0
                         vx, vy = (px - x) / d * new_bullet_speed, (py - y) / d * new_bullet_speed
                     new_tracks.append(Track(x, y, r, kind, vx, vy))
@@ -172,7 +177,8 @@ class Tracker:
 
 DRAW_COLORS = {"player": (140, 230, 120), "enemy_bullet": (80, 80, 255), "shooter_bullet": (80, 80, 255),
                "grunt": (60, 60, 230), "runner": (90, 220, 230), "shooter": (50, 150, 255),
-               "tank": (230, 130, 70), "boss": (200, 40, 200)}
+               "tank": (200, 80, 160), "tank_mini": (230, 120, 200), "boss": (200, 40, 200),
+               "health": (80, 255, 80)}
 
 
 def annotate(frame, dets, player=None, keys=None, aim=None, extra=""):
