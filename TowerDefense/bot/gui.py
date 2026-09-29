@@ -13,10 +13,10 @@ import sys
 import tkinter as tk
 from tkinter import ttk
 
-from swarm_bot import CONFIG_PATH, BotController
+from swarm_bot import CONFIG_PATH, FROZEN, BotController
 from vision import CLASSES, DEFAULT_TOLERANCE
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__))  # source folder (not used when frozen)
 
 # Colors taken from the game: near-black playfield, its red, and the player's green-gray.
 BG = "#07090d"
@@ -220,11 +220,11 @@ class App:
             self.write_log("A calibration/test window is already open.")
             return
         self.ctl.stop()
-        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
-        exe = sys.executable
-        if exe.lower().endswith("pythonw.exe"):  # calibration asks questions in a console
-            exe = exe[:-5] + ".exe"
-        self.proc = subprocess.Popen([exe, os.path.join(HERE, "swarm_bot.py"), *args], cwd=HERE, creationflags=flags)
+        if FROZEN:  # SwarmBot.exe runs calibrate/view itself when given them as arguments
+            cmd = [sys.executable, *args]
+        else:
+            cmd = [sys.executable, os.path.join(HERE, "swarm_bot.py"), *args]
+        self.proc = subprocess.Popen(cmd, cwd=os.path.dirname(CONFIG_PATH))
         self.write_log(f"Opened {' '.join(args)} in a new window.")
 
     def save_settings(self):
@@ -265,7 +265,41 @@ class App:
         self.root.destroy()
 
 
+def selftest():
+    """Used by the exe build: checks every bundled library loads and detection works."""
+    import cv2
+    import numpy as np
+    import mss  # noqa: F401
+    from pynput import keyboard  # noqa: F401
+    from vision import Detector, measure_blob
+
+    img = np.full((300, 400, 3), (11, 7, 5), np.uint8)
+    cv2.circle(img, (100, 150), 22, (184, 178, 176), -1)
+    cv2.circle(img, (300, 150), 14, (74, 74, 232), -1)
+    cfg = {"colors": {}}
+    for name, xy in (("player", (100, 150)), ("enemy_bullet", (300, 150))):
+        lab, radius = measure_blob(img, *xy)
+        cfg["colors"][name] = {"lab": lab, "radius": radius}
+    found = Detector(cfg).detect(img)
+    return len(found["player"]) == 1 and len(found["enemy_bullet"]) == 1
+
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    args = sys.argv[1:]
+    if args and args[0] == "--selftest":
+        out = os.path.join(os.path.dirname(CONFIG_PATH), "selftest.txt")
+        try:
+            ok = selftest()
+            msg = "ok" if ok else "detection failed"
+        except Exception as e:
+            ok, msg = False, f"error: {e!r}"
+        with open(out, "w") as f:
+            f.write(msg)
+        sys.exit(0 if ok else 1)
+    if args:  # calibrate / view, launched by the app itself
+        from swarm_bot import main
+        main(args)
+    else:
+        root = tk.Tk()
+        App(root)
+        root.mainloop()

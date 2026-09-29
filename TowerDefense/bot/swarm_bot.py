@@ -24,7 +24,9 @@ import numpy as np
 from runner import BotRunner
 from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, Detector, measure_blob
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
+FROZEN = getattr(sys, "frozen", False)
+HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 
 # Make screen coordinates real pixels even with Windows display scaling (125%, 150%...).
@@ -155,6 +157,16 @@ def fit_to_screen(img, max_w=1500, max_h=850):
     return cv2.resize(img, (int(img.shape[1] * s), int(img.shape[0] * s)), interpolation=cv2.INTER_AREA), s
 
 
+def show_on_top(win, img):
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+    cv2.imshow(win, img)
+    try:
+        cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        pass
+    cv2.waitKey(1)
+
+
 def banner(img, text):
     out = img.copy()
     cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
@@ -172,14 +184,25 @@ def calibrate(only):
         if n not in CLASSES:
             sys.exit(f"Unknown thing '{n}'. Choose from: {', '.join(CLASSES)}")
 
-    print("\nCALIBRATION")
-    print("Get the game running in Roblox with as many kinds of mobs on screen as you can.")
-    print("Tip: pause the game (P) once they're on screen, then come back here.\n")
-    input("Press Enter here, then switch to Roblox within 5 seconds...")
-    shot, off_x, off_y = grab_screen()
-
     win = "Swarm bot calibration"
-    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+    intro = np.zeros((230, 760, 3), np.uint8)
+    lines = [("CALIBRATION", (120, 255, 140), 0.9),
+             ("1. Start the game in Roblox with as many kinds of mobs on screen as you can", (230, 230, 230), 0.5),
+             ("   (press P in the game to pause once they're there).", (230, 230, 230), 0.5),
+             ("2. Come back to this window and press ENTER.", (230, 230, 230), 0.5),
+             ("3. Switch to Roblox: a screenshot is taken 5 seconds later.", (230, 230, 230), 0.5),
+             ("Esc = cancel", (150, 150, 150), 0.5)]
+    for i, (text, color, size) in enumerate(lines):
+        cv2.putText(intro, text, (20, 40 + i * 34), cv2.FONT_HERSHEY_SIMPLEX, size, color, 1, cv2.LINE_AA)
+    show_on_top(win, intro)
+    k = -1
+    while k not in (13, 27):
+        k = cv2.waitKey(30) & 0xFF
+    cv2.destroyAllWindows()
+    if k == 27:
+        sys.exit("Cancelled, nothing saved.")
+    shot, off_x, off_y = grab_screen()
+    show_on_top(win, banner(np.zeros((40, 760, 3), np.uint8), "Got it."))
 
     if not only or "region" not in cfg:
         disp, s = fit_to_screen(shot)
@@ -230,7 +253,7 @@ def calibrate(only):
         sys.exit("The player is required. Nothing saved; run calibrate again.")
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
-    print(f"\nSaved {CONFIG_PATH}. Next: run test_view.bat to check the bot sees everything.")
+    print(f"\nSaved {CONFIG_PATH}. Next: use Test view to check the bot sees everything.")
 
 
 COLORS = {"player": (140, 230, 120), "enemy_bullet": (80, 80, 255), "shooter_bullet": (80, 80, 255), "grunt": (60, 60, 230), "runner": (90, 220, 230),
@@ -368,8 +391,7 @@ def run():
         ctl.thread.join(1)
 
 
-if __name__ == "__main__":
-    args = sys.argv[1:]
+def main(args):
     try:
         if args and args[0] == "calibrate":
             calibrate(args[1:])
@@ -381,3 +403,7 @@ if __name__ == "__main__":
             run()
     except FileNotFoundError as e:
         sys.exit(str(e))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

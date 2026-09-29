@@ -10,12 +10,23 @@ it holds WASD to dodge, moves the mouse to aim and holds left click to shoot.
 
 Windows only.
 
-## One-time setup
+## Download (no Python needed)
+Get **SwarmBot.exe** from the latest release:
+https://github.com/FeniksRevenge/Eindwerk/releases/latest/download/SwarmBot.exe
+
+Put it in its own folder (it saves `config.json` next to itself) and double-click it.
+Windows may warn that it's from an unknown publisher: click **More info → Run anyway**.
+
+The exe is built automatically by GitHub Actions (`.github/workflows/build-swarm-bot.yml`) whenever
+the bot code changes.
+
+## Running from source instead
 1. Install Python: open CMD and run `winget install Python.Python.3.12`, then close and reopen CMD.
 2. Download this `bot` folder (all files) somewhere, e.g. `C:\Users\super\swarm-bot`.
+3. Double-click `start_app.bat`.
 
 ## The app
-Double-click **`start_app.bat`**. It opens the Swarm Bot window with:
+Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It opens the Swarm Bot window with:
 - **Start / Stop** buttons (same as the `*` and `-` hotkeys, which keep working while you're in Roblox)
 - the bot's status (Running / Stopped (died) / Waiting for the player) and its speed in fps
 - **Calibrate everything**, **Test view** and **Redo one** (recalibrate just the boss, a bullet, ...)
@@ -23,26 +34,24 @@ Double-click **`start_app.bat`**. It opens the Swarm Bot window with:
   before it counts as dead, and color tolerance
 - a log of what happened
 
-The `.bat` files below do the same things without the app.
-
 ## Calibrate (once, or again if colors/sizes change)
-Double-click **`calibrate.bat`**.
+Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
 1. Start the game in Roblox. Try to have a basic mob, an orange shooter, a bullet and ideally the boss on screen; press **P** to pause there.
-2. Press Enter in the black window, switch to Roblox within 5 seconds. It takes a screenshot.
+2. Press Enter in the calibration window, switch to Roblox within 5 seconds. It takes a screenshot.
 3. Drag a box around the **play area** (the whole game screen) and press Enter.
 4. Click on each thing it asks for. Press **S** to skip something that isn't on screen, **R** to redo a click.
    Click the **gray ball** for the player, the **red square** for the basic mob, a **red circle** for the bullets,
    the **orange ball** (not the ring) for the shooter, and the **red cross** for the boss.
 
-Missed the boss? Run `py swarm_bot.py calibrate boss` later with the boss on screen (keeps everything else).
+Missed the boss? Use **Redo one → boss** in the app later with the boss on screen (keeps everything else).
 
 ## Check it
-Double-click **`test_view.bat`** while the game runs. A window shows circles around everything the bot sees,
+Click **Test view** in the app (or `test_view.bat`) while the game runs. A window shows circles around everything the bot sees,
 without it touching your keyboard or mouse. Press Q to close it.
 If something isn't circled, or wrong things are, calibrate that thing again.
 
 ## Run
-Double-click **`run_bot.bat`**, go to Roblox, start a run and press **`*`**. Press **`-`** to stop.
+Go to Roblox, start a run and press **`*`** (or click Start). Press **`-`** to stop.
 
 ## Tuning (`config.json`, created by calibrate)
 | Setting | What it does |
