@@ -1,0 +1,454 @@
+<title>Pathline Defense</title>
+<meta charset="utf-8">
+<style>
+  /* Layout: one fixed 16:9 playfield, letterboxed and scaled to fit the window. Dark arcade look on purpose (single theme). */
+  :root {
+    color-scheme: dark;
+    --bg: #0f1216;
+    --field: #181c22;
+    --grid: #20252d;
+    --path: #3a342c;
+    --path-edge: #4e463a;
+    --ink: #e6e8eb;
+    --muted: #8b939e;
+    --gold: #ffd75a;
+    --player: #78e68c;
+    --font-ui: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    --font-num: "JetBrains Mono", Consolas, monospace;
+  }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); overflow: hidden; }
+  body { font-family: var(--font-ui); }
+  #wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+  canvas { display: block; background: var(--field); cursor: none; max-width: 100%; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@500&display=swap">
+
+<div id="wrap"><canvas id="game" width="1280" height="720" tabindex="0" aria-label="Game canvas"></canvas></div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------------------------------------------------------------- config
+  const W = 1280, H = 720;
+  const PATH_WIDTH = 56;
+  const PLAYER_RADIUS = 13, PLAYER_SPEED = 260, PLAYER_FIRE_DELAY = 0.11;
+  const BULLET_SPEED = 820, BULLET_DAMAGE = 10;
+  const BASE_MAX_HP = 20, START_GOLD = 100, WAVE_BREAK = 8;
+  const TOWER_RADIUS = 18, BASE_RADIUS = 38;
+
+  const PATH = [[-40,140],[260,140],[260,460],[560,460],[560,220],[880,220],[880,560],[1140,560],[1140,330]];
+  const BASE = PATH[PATH.length - 1];
+
+  const MOB_TYPES = {
+    grunt:   { hp: 30,  speed: 70,  radius: 13, color: "#dc5050", gold: 5,  shoots: false },
+    runner:  { hp: 18,  speed: 135, radius: 10, color: "#f0b43c", gold: 6,  shoots: false },
+    tank:    { hp: 160, speed: 42,  radius: 20, color: "#965ac8", gold: 18, shoots: false },
+    shooter: { hp: 40,  speed: 60,  radius: 14, color: "#50c8dc", gold: 10, shoots: true  },
+  };
+  const TOWER_TYPES = {
+    gun:    { cost: 50,  range: 170, delay: 0.35, damage: 8,  speed: 700, splash: 0,  color: "#5aaaff", key: "1", name: "Gun" },
+    cannon: { cost: 120, range: 210, delay: 1.4,  damage: 40, speed: 420, splash: 60, color: "#ff8c46", key: "2", name: "Cannon" },
+  };
+
+  // ---------------------------------------------------------------- helpers
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+  function distPointSeg(px, py, [ax, ay], [bx, by]) {
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    if (!l2) return dist(px, py, ax, ay);
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+    return dist(px, py, ax + t * dx, ay + t * dy);
+  }
+  const distToPath = (x, y) => Math.min(...PATH.slice(0, -1).map((p, i) => distPointSeg(x, y, p, PATH[i + 1])));
+  const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+  // ---------------------------------------------------------------- canvas + input
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  function fit() {
+    const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+    canvas.style.width = W * s + "px";
+    canvas.style.height = H * s + "px";
+  }
+  window.addEventListener("resize", fit);
+  fit();
+
+  const keys = new Set();
+  const mouse = { x: W / 2, y: H / 2, down: false };
+
+  function toGame(e) {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - r.left) * (W / r.width);
+    mouse.y = (e.clientY - r.top) * (H / r.height);
+  }
+  canvas.addEventListener("mousemove", toGame);
+  canvas.addEventListener("mousedown", e => {
+    toGame(e);
+    canvas.focus();
+    if (e.button === 0) {
+      mouse.down = true;
+      if (!game.started) game.started = true;
+    } else if (e.button === 2) game.tryPlaceTower(mouse.x, mouse.y);
+  });
+  window.addEventListener("mouseup", e => { if (e.button === 0) mouse.down = false; });
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  window.addEventListener("blur", () => { keys.clear(); mouse.down = false; if (game.started && !game.over) game.paused = true; });
+
+  window.addEventListener("keydown", e => {
+    const k = e.key.toLowerCase();
+    if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
+    keys.add(k);
+    if (e.repeat) return;
+    game.onKey(k);
+  });
+  window.addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+
+  // ---------------------------------------------------------------- entities
+  class Bullet {
+    constructor(x, y, vx, vy, damage, color, friendly, splash = 0, radius = 4) {
+      Object.assign(this, { x, y, vx, vy, damage, color, friendly, splash, radius, alive: true });
+    }
+    update(dt) {
+      this.x += this.vx * dt; this.y += this.vy * dt;
+      if (this.x < -20 || this.x > W + 20 || this.y < -20 || this.y > H + 20) this.alive = false;
+    }
+    draw() { circle(this.x, this.y, this.radius, this.color); }
+  }
+
+  class Mob {
+    constructor(kind, hpMult) {
+      const s = MOB_TYPES[kind];
+      Object.assign(this, { kind, speed: s.speed, radius: s.radius, color: s.color, gold: s.gold, shoots: s.shoots });
+      this.maxHp = this.hp = s.hp * hpMult;
+      [this.x, this.y] = PATH[0];
+      this.target = 1; this.alive = true; this.reachedBase = false;
+      this.shootTimer = rand(1, 2.5); this.flash = 0; this.progress = 0;
+    }
+    update(dt, player, bullets) {
+      let rem = this.speed * dt;
+      while (rem > 0 && this.target < PATH.length) {
+        const [tx, ty] = PATH[this.target];
+        const d = dist(this.x, this.y, tx, ty);
+        if (d <= rem) { this.x = tx; this.y = ty; rem -= d; this.progress += d; this.target++; }
+        else { this.x += (tx - this.x) / d * rem; this.y += (ty - this.y) / d * rem; this.progress += rem; rem = 0; }
+      }
+      if (this.target >= PATH.length) { this.reachedBase = true; this.alive = false; }
+
+      if (this.shoots) {
+        this.shootTimer -= dt;
+        if (this.shootTimer <= 0) {
+          this.shootTimer = rand(1.6, 2.6);
+          const d = dist(player.x, player.y, this.x, this.y);
+          if (d > 0 && d < 450) {
+            const nx = (player.x - this.x) / d, ny = (player.y - this.y) / d;
+            bullets.push(new Bullet(this.x + nx * this.radius, this.y + ny * this.radius, nx * 260, ny * 260, 1, "#ff5a78", false, 0, 6));
+          }
+        }
+      }
+      this.flash = Math.max(0, this.flash - dt);
+    }
+    hit(amount) { this.hp -= amount; this.flash = 0.08; if (this.hp <= 0) this.alive = false; }
+    draw() {
+      circle(this.x, this.y, this.radius, this.flash > 0 ? "#fff" : this.color);
+      ring(this.x, this.y, this.radius, "#141414", 2);
+      if (this.hp < this.maxHp) {
+        const w = this.radius * 2, x = this.x - this.radius, y = this.y - this.radius - 8;
+        ctx.fillStyle = "#3c1414"; ctx.fillRect(x, y, w, 4);
+        ctx.fillStyle = "#5adc5a"; ctx.fillRect(x, y, w * Math.max(0, this.hp) / this.maxHp, 4);
+      }
+    }
+  }
+
+  class Tower {
+    constructor(kind, x, y) { Object.assign(this, { kind, spec: TOWER_TYPES[kind], x, y, cooldown: 0, angle: 0 }); }
+    update(dt, mobs, bullets) {
+      this.cooldown = Math.max(0, this.cooldown - dt);
+      let target = null;
+      for (const m of mobs) if (dist(m.x, m.y, this.x, this.y) <= this.spec.range && (!target || m.progress > target.progress)) target = m;
+      if (!target) return;
+      const d = dist(target.x, target.y, this.x, this.y);
+      if (!d) return;
+      const nx = (target.x - this.x) / d, ny = (target.y - this.y) / d;
+      this.angle = Math.atan2(ny, nx);
+      if (this.cooldown === 0) {
+        this.cooldown = this.spec.delay;
+        const s = this.spec;
+        bullets.push(new Bullet(this.x + nx * TOWER_RADIUS, this.y + ny * TOWER_RADIUS, nx * s.speed, ny * s.speed, s.damage, s.color, true, s.splash, s.splash ? 7 : 4));
+      }
+    }
+    draw(showRange) {
+      if (showRange) rangeCircle(this.x, this.y, this.spec.range, "255,255,255");
+      ctx.fillStyle = "#464b55";
+      roundRect(this.x - TOWER_RADIUS, this.y - TOWER_RADIUS, TOWER_RADIUS * 2, TOWER_RADIUS * 2, 5);
+      line(this.x, this.y, this.x + Math.cos(this.angle) * (TOWER_RADIUS + 6), this.y + Math.sin(this.angle) * (TOWER_RADIUS + 6), "#c8c8d2", this.kind === "cannon" ? 8 : 5);
+      circle(this.x, this.y, TOWER_RADIUS - 6, this.spec.color);
+    }
+  }
+
+  class Particle {
+    constructor(x, y, color) {
+      const a = rand(0, Math.PI * 2), s = rand(60, 220);
+      Object.assign(this, { x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rand(0.25, 0.55), color });
+    }
+    update(dt) { this.x += this.vx * dt; this.y += this.vy * dt; this.vx *= 0.9; this.vy *= 0.9; this.life -= dt; }
+    draw() { if (this.life > 0) circle(this.x, this.y, Math.max(1, this.life * 8), this.color); }
+  }
+
+  // ---------------------------------------------------------------- draw primitives
+  function circle(x, y, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+  function ring(x, y, r, color, w) { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke(); }
+  function line(x1, y1, x2, y2, color, w) { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+  function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+  function rangeCircle(x, y, r, rgb) { circle(x, y, r, `rgba(${rgb},0.1)`); ring(x, y, r, `rgba(${rgb},0.35)`, 2); }
+  function text(str, x, y, { size = 20, color = "#e6e8eb", align = "left", font = "num", weight = 500, alpha = 1 } = {}) {
+    ctx.globalAlpha = alpha;
+    ctx.font = `${weight} ${size}px ${font === "ui" ? '"Chakra Petch", "Segoe UI", sans-serif' : '"JetBrains Mono", Consolas, monospace'}`;
+    ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+    ctx.fillText(str, x, y);
+    ctx.globalAlpha = 1;
+    return ctx.measureText(str).width;
+  }
+
+  // Static background drawn once to an offscreen canvas.
+  const bg = document.createElement("canvas");
+  bg.width = W; bg.height = H;
+  (() => {
+    const b = bg.getContext("2d");
+    b.fillStyle = "#181c22"; b.fillRect(0, 0, W, H);
+    b.strokeStyle = "#20252d"; b.lineWidth = 1;
+    for (let x = 0; x <= W; x += 40) { b.beginPath(); b.moveTo(x + 0.5, 0); b.lineTo(x + 0.5, H); b.stroke(); }
+    for (let y = 0; y <= H; y += 40) { b.beginPath(); b.moveTo(0, y + 0.5); b.lineTo(W, y + 0.5); b.stroke(); }
+    b.lineJoin = "round"; b.lineCap = "round";
+    for (const [color, w] of [["#4e463a", PATH_WIDTH + 6], ["#3a342c", PATH_WIDTH]]) {
+      b.strokeStyle = color; b.lineWidth = w; b.beginPath();
+      PATH.forEach(([x, y], i) => i ? b.lineTo(x, y) : b.moveTo(x, y));
+      b.stroke();
+    }
+  })();
+
+  // ---------------------------------------------------------------- game
+  const game = {
+    reset() {
+      this.player = { x: W / 2, y: H / 2 + 180, cooldown: 0, ax: 1, ay: 0 };
+      this.mobs = []; this.bullets = []; this.towers = []; this.particles = [];
+      this.gold = START_GOLD; this.baseHp = BASE_MAX_HP; this.wave = 0;
+      this.spawnQueue = []; this.spawnTimer = 0; this.spawnInterval = 1; this.hpMult = 1;
+      this.breakTimer = 4; this.kills = 0; this.selected = null;
+      this.over = false; this.deathReason = ""; this.paused = false;
+      this.message = ""; this.messageTimer = 0;
+    },
+    started: false,
+
+    startNextWave() {
+      const w = ++this.wave;
+      const q = Array(6 + w * 2).fill("grunt");
+      if (w >= 2) q.push(...Array(w * 2).fill("runner"));
+      if (w >= 3) q.push(...Array(w - 1).fill("shooter"));
+      if (w >= 4) q.push(...Array(Math.floor(w / 2)).fill("tank"));
+      this.spawnQueue = shuffle(q);
+      this.spawnInterval = Math.max(0.25, 0.9 - w * 0.05);
+      this.spawnTimer = 0;
+      this.hpMult = 1 + (w - 1) * 0.15;
+      this.flash(`Wave ${w}`);
+    },
+    waveActive() { return this.spawnQueue.length > 0 || this.mobs.length > 0; },
+    flash(msg) { this.message = msg; this.messageTimer = 1.8; },
+
+    onKey(k) {
+      if (!this.started) { this.started = true; return; }
+      if ((k === "p" || k === "escape") && !this.over) this.paused = !this.paused;
+      else if (k === "r" && this.over) this.reset();
+      else if (k === " " && !this.over && !this.waveActive()) this.breakTimer = 0;
+      else if (k === "1" || k === "2") {
+        const kind = k === "1" ? "gun" : "cannon";
+        this.selected = this.selected === kind ? null : kind;
+      }
+    },
+
+    canPlace(x, y) {
+      if (!this.selected) return false;
+      if (distToPath(x, y) < PATH_WIDTH / 2 + TOWER_RADIUS) return false;
+      if (dist(x, y, BASE[0], BASE[1]) < BASE_RADIUS + TOWER_RADIUS + 10) return false;
+      if (!(x > TOWER_RADIUS && x < W - TOWER_RADIUS && y > 60 && y < H - TOWER_RADIUS)) return false;
+      return this.towers.every(t => dist(t.x, t.y, x, y) >= TOWER_RADIUS * 2 + 4);
+    },
+    tryPlaceTower(x, y) {
+      if (!this.started || this.over || this.paused || !this.selected) return;
+      const cost = TOWER_TYPES[this.selected].cost;
+      if (this.gold < cost) return this.flash("Not enough gold");
+      if (!this.canPlace(x, y)) return this.flash("Can't build there");
+      this.gold -= cost;
+      this.towers.push(new Tower(this.selected, x, y));
+    },
+
+    update(dt) {
+      this.messageTimer = Math.max(0, this.messageTimer - dt);
+      this.particles.forEach(p => p.update(dt));
+      this.particles = this.particles.filter(p => p.life > 0);
+      if (!this.started || this.over || this.paused) return;
+
+      // player
+      const p = this.player;
+      let mx = (keys.has("d") || keys.has("arrowright")) - (keys.has("a") || keys.has("arrowleft"));
+      let my = (keys.has("s") || keys.has("arrowdown")) - (keys.has("w") || keys.has("arrowup"));
+      const ml = Math.hypot(mx, my);
+      if (ml) { mx /= ml; my /= ml; }
+      p.x = Math.max(PLAYER_RADIUS, Math.min(W - PLAYER_RADIUS, p.x + mx * PLAYER_SPEED * dt));
+      p.y = Math.max(PLAYER_RADIUS, Math.min(H - PLAYER_RADIUS, p.y + my * PLAYER_SPEED * dt));
+      const ad = dist(mouse.x, mouse.y, p.x, p.y);
+      if (ad > 1) { p.ax = (mouse.x - p.x) / ad; p.ay = (mouse.y - p.y) / ad; }
+      p.cooldown = Math.max(0, p.cooldown - dt);
+      if (mouse.down && p.cooldown === 0) {
+        p.cooldown = PLAYER_FIRE_DELAY;
+        const a = Math.atan2(p.ay, p.ax) + rand(-0.04, 0.04);
+        this.bullets.push(new Bullet(p.x + p.ax * (PLAYER_RADIUS + 6), p.y + p.ay * (PLAYER_RADIUS + 6),
+          Math.cos(a) * BULLET_SPEED, Math.sin(a) * BULLET_SPEED, BULLET_DAMAGE, "#fff5aa", true));
+      }
+
+      // waves
+      if (!this.waveActive()) {
+        this.breakTimer -= dt;
+        if (this.breakTimer <= 0) { this.startNextWave(); this.breakTimer = WAVE_BREAK; }
+      }
+      if (this.spawnQueue.length) {
+        this.spawnTimer -= dt;
+        if (this.spawnTimer <= 0) { this.mobs.push(new Mob(this.spawnQueue.pop(), this.hpMult)); this.spawnTimer = this.spawnInterval; }
+      }
+
+      this.mobs.forEach(m => m.update(dt, p, this.bullets));
+      this.towers.forEach(t => t.update(dt, this.mobs, this.bullets));
+      this.bullets.forEach(b => b.update(dt));
+      this.collide();
+
+      for (const m of this.mobs) if (m.reachedBase) { this.baseHp -= m.kind === "tank" ? 2 : 1; this.burst(m.x, m.y, "#ff5050", 14); }
+      this.mobs = this.mobs.filter(m => m.alive);
+      this.bullets = this.bullets.filter(b => b.alive);
+      if (this.baseHp <= 0) { this.baseHp = 0; this.end("The base was overrun"); }
+    },
+
+    collide() {
+      const p = this.player;
+      for (const b of this.bullets) {
+        if (!b.alive) continue;
+        if (b.friendly) {
+          for (const m of this.mobs) {
+            if (!m.alive || dist(b.x, b.y, m.x, m.y) > m.radius + b.radius) continue;
+            b.alive = false;
+            if (b.splash) {
+              this.burst(b.x, b.y, "#ffa050", 12);
+              for (const o of this.mobs) if (o.alive && dist(o.x, o.y, b.x, b.y) <= b.splash + o.radius) this.hitMob(o, b.damage);
+            } else this.hitMob(m, b.damage);
+            break;
+          }
+        } else if (dist(b.x, b.y, p.x, p.y) <= PLAYER_RADIUS + b.radius) return this.end("You got shot");
+      }
+      for (const m of this.mobs) if (m.alive && dist(m.x, m.y, p.x, p.y) <= m.radius + PLAYER_RADIUS) return this.end(`A ${m.kind} got you`);
+    },
+    hitMob(m, dmg) {
+      m.hit(dmg);
+      if (!m.alive) { this.gold += m.gold; this.kills++; this.burst(m.x, m.y, m.color, 10); }
+    },
+    burst(x, y, color, n) { for (let i = 0; i < n; i++) this.particles.push(new Particle(x, y, color)); },
+    end(reason) {
+      if (this.over) return;
+      this.over = true; this.deathReason = reason;
+      this.burst(this.player.x, this.player.y, "#78e68c", 30);
+    },
+
+    draw() {
+      ctx.drawImage(bg, 0, 0);
+      // base
+      circle(BASE[0], BASE[1], BASE_RADIUS, "#3c6ec8");
+      ring(BASE[0], BASE[1], BASE_RADIUS, "#aad2ff", 3);
+      text("BASE", BASE[0], BASE[1], { size: 16, align: "center", font: "ui", weight: 700 });
+
+      this.towers.forEach(t => t.draw(dist(t.x, t.y, mouse.x, mouse.y) < TOWER_RADIUS));
+      this.mobs.forEach(m => m.draw());
+      this.bullets.forEach(b => b.draw());
+      if (!this.over) {
+        const p = this.player;
+        line(p.x, p.y, p.x + p.ax * (PLAYER_RADIUS + 10), p.y + p.ay * (PLAYER_RADIUS + 10), "#c8c8d2", 6);
+        circle(p.x, p.y, PLAYER_RADIUS, "#78e68c");
+        ring(p.x, p.y, PLAYER_RADIUS, "#e6ffeb", 2);
+      }
+      this.particles.forEach(pt => pt.draw());
+
+      // cursor / tower ghost
+      if (this.selected && !this.over && this.started) {
+        const s = TOWER_TYPES[this.selected];
+        const ok = this.canPlace(mouse.x, mouse.y) && this.gold >= s.cost;
+        rangeCircle(mouse.x, mouse.y, s.range, ok ? "80,255,120" : "255,80,80");
+        ctx.globalAlpha = 0.5; ctx.fillStyle = s.color;
+        roundRect(mouse.x - TOWER_RADIUS, mouse.y - TOWER_RADIUS, TOWER_RADIUS * 2, TOWER_RADIUS * 2, 5);
+        ctx.globalAlpha = 1;
+      } else {
+        ring(mouse.x, mouse.y, 8, "#fff", 1);
+        line(mouse.x - 12, mouse.y, mouse.x + 12, mouse.y, "#fff", 1);
+        line(mouse.x, mouse.y - 12, mouse.x, mouse.y + 12, "#fff", 1);
+      }
+      this.drawHud();
+    },
+
+    drawHud() {
+      ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, 0, W, 44);
+      const status = this.waveActive()
+        ? `${this.mobs.length + this.spawnQueue.length} mobs left`
+        : `next wave in ${Math.max(0, Math.ceil(this.breakTimer))}s [Space]`;
+      const parts = [
+        [`Wave ${this.wave}`, "#e6e8eb"],
+        [`Base ${this.baseHp}/${BASE_MAX_HP}`, this.baseHp <= 5 ? "#ff7878" : "#8cbeff"],
+        [`Gold ${this.gold}`, "#ffd75a"],
+        [`Kills ${this.kills}`, "#c8c8c8"],
+        [status, "#8b939e"],
+      ];
+      let x = 14;
+      for (const [s, c] of parts) x += text(s, x, 22, { size: 18, color: c }) + 26;
+
+      x = W - 14;
+      for (const kind of Object.keys(TOWER_TYPES).reverse()) {
+        const s = TOWER_TYPES[kind];
+        const color = this.gold >= s.cost ? s.color : "#6e6e6e";
+        const label = `[${s.key}] ${s.name} ${s.cost}g`;
+        ctx.font = `500 18px "JetBrains Mono", Consolas, monospace`;
+        const w = ctx.measureText(label).width;
+        x -= w;
+        if (this.selected === kind) { ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect(x - 6, 6, w + 12, 32, 4); ctx.stroke(); }
+        text(label, x, 22, { size: 18, color });
+        x -= 24;
+      }
+
+      if (this.messageTimer > 0 && !this.over && this.started)
+        text(this.message, W / 2, 110, { size: 56, align: "center", font: "ui", weight: 700, alpha: Math.min(1, this.messageTimer) });
+
+      if (!this.started) this.overlay("PATHLINE DEFENSE", "Click to start", [
+        "WASD move   ·   Mouse aim   ·   Hold left click to shoot",
+        "1 / 2 pick a tower, right click to build it   ·   Space skips the break   ·   P pauses",
+        "One hit and you're dead. Keep mobs off the base.",
+      ]);
+      else if (this.paused) this.overlay("PAUSED", "Press P or Esc to resume");
+      else if (this.over) this.overlay("GAME OVER", `${this.deathReason}  ·  wave ${this.wave}, ${this.kills} kills  ·  press R to restart`);
+    },
+
+    overlay(title, sub, lines = []) {
+      ctx.fillStyle = "rgba(8,10,14,0.72)"; ctx.fillRect(0, 0, W, H);
+      const top = H / 2 - 40 - lines.length * 16;
+      text(title, W / 2, top, { size: 64, align: "center", font: "ui", weight: 700 });
+      text(sub, W / 2, top + 58, { size: 22, align: "center", color: "#78e68c" });
+      lines.forEach((l, i) => text(l, W / 2, top + 110 + i * 32, { size: 17, align: "center", color: "#aab2bc" }));
+    },
+  };
+
+  game.reset();
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 1 / 30);
+    last = now;
+    game.update(dt);
+    game.draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>

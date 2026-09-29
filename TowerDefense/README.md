@@ -3,7 +3,10 @@
 Mobs walk the path toward your base. Shoot them yourself and build towers with the gold you earn.
 One hit kills you (touching a mob or a mob bullet). Game also ends if the base drops to 0 HP.
 
-## Run
+## Run in the browser (no install)
+Double-click `tower_defense.html`.
+
+## Run with Python
 ```
 pip install -r requirements.txt
 python tower_defense.py
