@@ -30,6 +30,7 @@ class BotRunner:
         self.seen_player = False
         self.last_t = None
         self.stuck_time = 0.0
+        self.latency = 0.05  # seconds from screenshot to keys, measured while running
         self.bad_spots = []  # [(x, y, until_time)]: static things mistaken for the player
         self.notes = []      # messages for the log, collected by the caller
         self.last = None     # everything from the latest tick, for screenshots
@@ -79,6 +80,7 @@ class BotRunner:
         self.last_t = now
 
         frame = self.io.grab()
+        t_grab = self.io.now()
         h, w = frame.shape[:2]
         dets = self.detector.detect(frame)
         found = self._pick_player(dets["player"], now)
@@ -135,7 +137,8 @@ class BotRunner:
 
         k = r / REF_R
         tracks = self.tracker.update(dets, dt, (x, y), max_speed=400 * k, new_bullet_speed=260 * k)
-        keys, aim, fire = self.brain.think((x, y, r), speed, tracks, w, h)
+        # Delay between the screenshot and our keys taking effect (processing + roughly one frame).
+        keys, aim, fire = self.brain.think((x, y, r), speed, tracks, w, h, latency=min(0.25, self.latency))
         self.last.update({"keys": keys, "aim": aim, "fire": fire, "speed": speed})
 
         if not self.io.focused():
@@ -147,4 +150,5 @@ class BotRunner:
         if aim is not None:
             self.io.aim(min(max(aim[0], 0), w - 1), min(max(aim[1], 0), h - 1))
         self.io.mouse(fire)
+        self.latency = 0.8 * self.latency + 0.2 * max(0.0, self.io.now() - t_grab + dt * 0.5)
         return "ok"

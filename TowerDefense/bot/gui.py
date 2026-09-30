@@ -114,7 +114,8 @@ class App:
         setup.pack(fill="x")
         ttk.Button(setup, text="Use preset colors", command=self.use_preset).pack(side="left", padx=(0, 6))
         ttk.Button(setup, text="Use main screen", command=self.set_main_screen).pack(side="left", padx=(0, 6))
-        ttk.Button(setup, text="Test view", command=lambda: self.launch("view")).pack(side="left")
+        ttk.Button(setup, text="Test view", command=lambda: self.launch("view")).pack(side="left", padx=(0, 6))
+        ttk.Button(setup, text="Simulator", command=self.open_simulator).pack(side="left")
 
         setup2 = tk.Frame(wrap, bg=BG)
         setup2.pack(fill="x", pady=(8, 0))
@@ -303,6 +304,11 @@ class App:
         self.photos_var.set(f"{n} photo(s) waiting. Press / while playing to add more. "
                             "Each photo is deleted once it's been trained on." if n else
                             "No photos yet. Press / while playing to save some, then train on them here.")
+
+    def open_simulator(self):
+        from simulator import SimWindow
+        SimWindow(self.root)
+        self.write_log("Simulator opened: the bot's real brain playing a practice arena (1x/2x/5x/10x).")
 
     def clear_ignore(self):
         with CONFIG_LOCK:

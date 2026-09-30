@@ -30,15 +30,19 @@ FAST = 250.0  # game units/s: an "orange shooter" moving faster than this is rea
 class Brain:
     BULLET_MARGIN = 22
     MOB_MARGIN = 60
-    BOSS_MARGIN = 260   # extra distance to keep from the boss (it rushes)
+    BOSS_MARGIN = 60    # extra distance to keep from the boss (bigger made it hide in corners)
     CROWD_WEIGHT = 2500
     WALL_MARGIN = 140
     WALL_WEIGHT = 0.35
     ORBIT_WEIGHT = 150
+    EDGE_MARGIN = 190     # distance from each edge where moving on costs extra (corners count twice)
+    EDGE_WEIGHT = 0.5
+    BOSS_AWAY = 0.35      # boss nearby: mostly circle around it, only a little straight away from it
+    BOSS_CENTER = 2.5     # ... and lean toward the middle so the circling doesn't end in a corner
 
-    def __init__(self, bullet_speed=820.0, params=None):
+    def __init__(self, bullet_speed=820.0, params=None, **overrides):
         self.bullet_speed = bullet_speed  # speed of YOUR bullets, game units/s (for leading shots)
-        for name, value in (params or {}).items():  # trained values (see trainer.py)
+        for name, value in {**(params or {}), **overrides}.items():  # tuned values
             if hasattr(Brain, name):
                 setattr(self, name, float(value))
         self.prev = np.zeros(2)
@@ -53,7 +57,10 @@ class Brain:
             return max(measured, t.vmax / k, 0.7 * player_speed)
         return max(measured, base * 0.8)
 
-    def _leg(self, start, t0, steps, speed, W, H, pr, mobs, bullets):
+    BULLET_HIT = 1e6   # getting hit costs far more than any "too close" penalty (boss distance included)
+    MOB_HIT = 3e5
+
+    def _leg(self, start, t0, steps, speed, W, H, pr, mobs, bullets, latency=0.0):
         """Danger of running straight in each of the 9 directions from each start point.
         start: (N, 2). Returns cost (N, 9) and end points (N, 9, 2)."""
         P = start[:, None, None, :] + DIRS[None, :, None, :] * speed * steps[None, None, :, None]
@@ -61,6 +68,7 @@ class Brain:
         P[..., 1] = np.clip(P[..., 1], pr, H - pr)
         T = t0 + steps
         urg = np.maximum(0.3, 1.4 - T)[None, None, :, None]  # near-future danger matters more
+        T = T + latency  # things keep moving while the bot reads the screen and presses keys
         cost = np.zeros(P.shape[:2])
 
         if len(bullets["pos"]):
@@ -68,7 +76,7 @@ class Brain:
             gap = np.linalg.norm(P[:, :, :, None, :] - bp[None, None], axis=-1) - pr - bullets["r"]
             m = self.BULLET_MARGIN
             near = (m - np.maximum(gap, 0)) ** 2 * 4
-            c = np.where(gap < 0, 20000.0 + m * m * 4, np.where(gap < m, near, 0.0))  # a hit always costs more than a near miss
+            c = np.where(gap < 0, self.BULLET_HIT, np.where(gap < m, near, 0.0))
             cost += (c * urg).sum(axis=(2, 3))
 
         if len(mobs["pos"]):
@@ -82,8 +90,12 @@ class Brain:
             gap = np.linalg.norm(P[:, :, :, None, :] - pos, axis=-1) - pr - mobs["r"]
             m = mobs["margin"]
             near = (m - np.maximum(gap, 0)) ** 2 * 1.5
-            c = np.where(gap < 0, 20000.0 + m * m * 1.5, np.where(gap < m, near, 0.0))
+            c = np.where(gap < 0, self.MOB_HIT, np.where(gap < m, near, 0.0))
             cost += (c * urg).sum(axis=(2, 3))
+        # Edges and corners along the way: each edge adds its own penalty, so corners cost double.
+        ex = np.maximum(0, self.EDGE_MARGIN - np.minimum(P[..., 0], W - P[..., 0]))
+        ey = np.maximum(0, self.EDGE_MARGIN - np.minimum(P[..., 1], H - P[..., 1]))
+        cost += ((ex ** 2 + ey ** 2) * self.EDGE_WEIGHT * urg[..., 0]).sum(axis=2)
         return cost, P[:, :, -1, :]
 
     def _spot(self, pts, W, H, mobs):
@@ -96,7 +108,7 @@ class Brain:
         cost += np.where(wall < self.WALL_MARGIN, (self.WALL_MARGIN - wall) ** 2 * self.WALL_WEIGHT, 0)
         return cost
 
-    def think(self, player, player_speed, tracks, width, height):
+    def think(self, player, player_speed, tracks, width, height, latency=0.0):
         """player: (x, y, r) in screen pixels of the play area. tracks: vision.Track list.
         Returns (keys to hold, (aim_x, aim_y) in play-area pixels or None, fire?)."""
         px, py, prad = player
@@ -141,8 +153,10 @@ class Brain:
             away = np.array([p[0] - boss.x / k, p[1] - boss.y / k])
             away /= np.linalg.norm(away) or 1
             tangent = np.array([-away[1], away[0]]) * self.orbit_dir
-            pref = away + 0.6 * tangent
-            pref /= np.linalg.norm(pref)
+            center = np.array([W / 2 - p[0], H / 2 - p[1]])
+            center /= max(np.linalg.norm(center), W * 0.25)  # stronger the further from the middle
+            pref = tangent + self.BOSS_AWAY * away + self.BOSS_CENTER * center
+            pref /= np.linalg.norm(pref) or 1
             pull = self.ORBIT_WEIGHT * 2
         elif pickups:
             # Go get the nearest green health circle; the danger checks still keep it safe on the way.
@@ -152,8 +166,12 @@ class Brain:
                 pref = to / np.linalg.norm(to)
                 pull = self.ORBIT_WEIGHT * 3
 
-        c1, end1 = self._leg(p[None], 0.0, STEPS1, speed, W, H, pr, mobs, bullets)
-        c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, mobs, bullets)
+        # During the reaction delay the player keeps moving with the keys we're still holding,
+        # so plan from where it will be when the new keys land, not from where it is now.
+        start = p + self.prev * speed * latency
+        start = np.array([min(max(start[0], pr), W - pr), min(max(start[1], pr), H - pr)])
+        c1, end1 = self._leg(start[None], 0.0, STEPS1, speed, W, H, pr, mobs, bullets, latency)
+        c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, mobs, bullets, latency)
         follow = (c2 * 0.7 + self._spot(end2, W, H, mobs)).min(axis=1)
         total = c1[0] + follow
         total += (1 - DIRS @ pref) * pull

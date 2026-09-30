@@ -286,36 +286,50 @@ class Tracker:
     def update(self, dets, dt, player_xy, max_speed, new_bullet_speed):
         px, py = player_xy
         new_tracks = []
+        bosses = []
         for kind in MOB_KINDS + ["enemy_bullet", "health"]:
             old = [t for t in self.tracks if t.kind == kind]
-            used = set()
-            for (x, y, r) in dets.get(kind, []):
-                best, best_d = None, max_speed * dt + r + 6
+            det = dets.get(kind, [])
+            # Match closest pairs first (not in detection order), so dense bullet rings don't get
+            # their tracks swapped, which would give them wrong speeds.
+            pairs = []
+            for j, (x, y, r) in enumerate(det):
+                limit = max_speed * dt + r + 6
                 for i, t in enumerate(old):
-                    if i in used:
-                        continue
                     d = math.hypot(t.x + t.vx * dt - x, t.y + t.vy * dt - y)
-                    if d < best_d:
-                        best, best_d = i, d
-                if best is not None:
-                    used.add(best)
-                    t = old[best]
+                    if d < limit:
+                        pairs.append((d, i, j))
+            pairs.sort()
+            used, matched = set(), {}
+            for d, i, j in pairs:
+                if i not in used and j not in matched:
+                    used.add(i)
+                    matched[j] = i
+            for j, (x, y, r) in enumerate(det):
+                if j in matched:
+                    t = old[matched[j]]
                     if dt > 0:
-                        a = 0.5  # smoothing
-                        t.vx = (1 - a) * t.vx + a * (x - t.x) / dt
-                        t.vy = (1 - a) * t.vy + a * (y - t.y) / dt
+                        mvx, mvy = (x - t.x) / dt, (y - t.y) / dt
+                        a = 1.0 if t.age == 0 else 0.5  # first real measurement replaces the guess
+                        t.vx = (1 - a) * t.vx + a * mvx
+                        t.vy = (1 - a) * t.vy + a * mvy
                     t.x, t.y, t.r = x, y, r
                     t.vmax = max(math.hypot(t.vx, t.vy), t.vmax * 0.995)
                     t.age += 1
                     t.missing = 0
                     new_tracks.append(t)
                 else:
-                    # Brand new thing. A new bullet is almost always flying at the player.
                     vx = vy = 0.0
                     if kind == "enemy_bullet":  # health pickups stay put
-                        d = math.hypot(px - x, py - y) or 1.0
-                        vx, vy = (px - x) / d * new_bullet_speed, (py - y) / d * new_bullet_speed
+                        # A new bullet right next to the boss flies outward from it (its bullet rings);
+                        # otherwise assume it's flying at the player.
+                        boss = next((b for b in bosses if math.hypot(b.x - x, b.y - y) < b.r * 3), None)
+                        ox, oy = (x - boss.x, y - boss.y) if boss else (px - x, py - y)
+                        d = math.hypot(ox, oy) or 1.0
+                        vx, vy = ox / d * new_bullet_speed, oy / d * new_bullet_speed
                     new_tracks.append(Track(x, y, r, kind, vx, vy))
+            if kind == "boss":
+                bosses = [t for t in new_tracks if t.kind == "boss"]
             # Keep things that vanished for a frame or two (flicker, overlap) at their predicted spot.
             for i, t in enumerate(old):
                 if i not in used and t.missing < 2:

@@ -76,6 +76,18 @@ If something isn't circled, or wrong things are, calibrate that thing again.
 ## Run
 Go to Roblox, start a run and press **`*`** (or click Start). Press **`-`** to stop.
 
+## Simulator (watch the bot play)
+Click **Simulator** in the app. It opens a practice arena where the bot's **real brain** plays a simulated
+version of the game (orange shooters, yellow mobs shooting in all directions, grunts, tanks, the boss with
+its bullet rings), with the same reaction delay as in Roblox. Your player shoots back, so mobs die and respawn.
+
+- **1x / 2x / 5x / 10x**: speed. **Pause**, **Restart**, and a scenario list (Mixed, Many shooters, Boss, Swarm).
+- The top bar shows time, **hits (per minute)**, kills, the keys the bot holds, and the real speed it manages.
+- Your player flashes red when hit; the green arrow shows the direction it's moving.
+
+The simulator is also how the dodging was tuned. Before/after on the same fights (hits per minute):
+Mixed 11.8 -> 2.3, Many shooters 6.5 -> 1.0, Boss 11 -> 2.8; time spent in corners went from ~17 s/min to ~5 s/min.
+
 ## Photo trainer (teach it from screenshots)
 Press **`/`** while playing to save screenshots, then train on them in the app (**PHOTO TRAINER**).
 It opens every photo one after another and shows what the bot detected. Each finished photo is
