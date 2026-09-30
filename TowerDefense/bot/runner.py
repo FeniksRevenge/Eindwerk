@@ -37,12 +37,19 @@ class BotRunner:
         self.last = None     # everything from the latest tick, for screenshots
         self.first_seen = None  # time the player was first seen this run
         self.last_seen = None
+        self.started = None     # time of the first tick
 
     def run_seconds(self):
         """How long the player survived this run (first to last sighting)."""
         if self.first_seen is None:
             return 0.0
         return self.last_seen - self.first_seen
+
+    def waiting_time(self):
+        """Seconds since the bot started without ever seeing the player."""
+        if self.seen_player or self.started is None:
+            return 0.0
+        return self.io.now() - self.started
 
     def release(self):
         self.io.set_keys(())
@@ -77,6 +84,8 @@ class BotRunner:
     def step(self):
         """One tick. Returns "ok", "waiting" (player not seen yet) or "dead"."""
         now = self.io.now()
+        if self.started is None:
+            self.started = now
         dt = 1 / 30 if self.last_t is None else max(1e-3, min(0.2, now - self.last_t))
         self.last_t = now
 

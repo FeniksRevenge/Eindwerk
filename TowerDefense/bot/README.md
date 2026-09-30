@@ -30,6 +30,7 @@ the bot code changes.
 Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It opens the Swarm Bot window with:
 - **Start / Stop** buttons (same as the `*` and `-` hotkeys, which keep working while you're in Roblox)
 - the bot's status (Running / Stopped (died) / Waiting for the player) and its speed in fps
+- **Fast screen capture (dxcam)**: on by default; untick it if the bot can't find you (see below)
 - **Calibrate everything**, **Test view** and **Redo one** (recalibrate just the boss, a bullet, ...)
 - settings: only control Roblox when it's the active window, how long the player must be gone
   before it counts as dead, and color tolerance
@@ -84,13 +85,25 @@ boss with its bullet rings), with the same reaction delay as in Roblox. Your pla
 
 - **HP bar 10/10**: every hit costs 1 HP. Killed mobs sometimes (5%) drop a **green circle**: walking over
   it gives **+2 HP**. It gets harder over time (an extra enemy every 15 s), like real waves.
-- **1x / 2x / 5x / 10x** speed, **Pause**, **Restart**, and a scenario list (Mixed, Many shooters, Boss, Swarm).
-- **Auto-train when it dies** (on by default): at **0/10** the run stops and it trains a better way to dodge,
-  at full speed: it measures the current dodge settings on 3 fights, then tries 6 small changes on the
-  *same* fights and keeps a change only if it survives longer. You can watch the training fights. Then it
-  plays again with the improved settings. **Train now** starts a round anytime; **Reset training** goes back
-  to the defaults.
+- **1x / 2x / 5x / 10x / 100x** speed, **Pause**, **Restart**, and a scenario list (Mixed, Many shooters, Boss, Swarm).
+  At 100x it runs as fast as your PC can; the info line shows the real speed (e.g. `running at 40x`).
+- **Keep training while it plays** (on by default): training runs nonstop in the background, on your other
+  CPU cores, while you watch. Each round plays 4 test fights with the current dodge settings and with a
+  bunch of small changes (more changes on PCs with more cores), all at once at full speed, and keeps the
+  best change if it survives more than 3% longer. Better settings are used **right away**, also by the fight
+  you're watching. When the player reaches **0/10** it just plays again. **Reset training** goes back to
+  the defaults.
 - The trained settings are saved in `config.json` (`brain_params`) and **the real bot uses them too**.
+
+## It can't find me (the gray ball)
+- If the bot doesn't see you within 3 seconds of pressing `*`, it **saves a screenshot automatically** and
+  says so in the log. Open the `_bot.png` (**Open screenshots folder**): is your ball circled in white?
+- Not circled, and the picture looks wrong (black, other screen, washed-out colors)? Untick **Fast screen
+  capture (dxcam)** in the app. (The bot already compares dxcam with a normal screenshot at start and
+  switches by itself when they differ; the log says which one it uses.)
+- Picture is fine but you're not circled: click **Use preset colors** (a wrong click in the photo trainer
+  can shift the learned gray), or **Clear ignore list**. The player can't be put on the ignore list
+  anymore, and when the learned gray finds nothing the bot also tries the preset gray.
 
 ## Overlay (see what the bot sees on your screen)
 Tick **Show overlay on screen** in the app. While the bot runs, it draws right on top of the game at 60 fps
@@ -145,6 +158,7 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 | `downscale` | 2 = look at half resolution (faster). 1 = full resolution (more accurate, slower). |
 | `death_timeout` | Seconds the player must be missing before it counts as dead and stops (at least 3). |
 | `require_focus` | `true` = only send input while Roblox is the active window. |
+| `fast_capture` | `true` = fast dxcam capture (checked against a normal screenshot at start), `false` = always mss. |
 | `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
 | `expand` | Danger size per kind, e.g. `{"boss": 1.5}`: the bot treats it as 1.5x bigger and keeps more distance. Set it in the app under **Danger size of**. |
 

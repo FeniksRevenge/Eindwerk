@@ -146,6 +146,9 @@ class App:
         self.overlay_var = tk.BooleanVar(value=cfg.get("overlay", False))
         ttk.Checkbutton(wrap, text="Show overlay on screen (what the bot sees, live)", variable=self.overlay_var,
                         command=self.toggle_overlay).pack(anchor="w", pady=(2, 0))
+        self.fast_var = tk.BooleanVar(value=cfg.get("fast_capture", True))
+        ttk.Checkbutton(wrap, text="Fast screen capture (dxcam); turn off if it can't find you", variable=self.fast_var,
+                        command=self.save_settings).pack(anchor="w", pady=(2, 0))
         self.shots_on_var = tk.BooleanVar(value=cfg.get("auto_shots", True))
         ttk.Checkbutton(wrap, text="Take pictures automatically while the bot plays", variable=self.shots_on_var,
                         command=self.save_settings).pack(anchor="w", pady=(2, 6))
@@ -352,7 +355,7 @@ class App:
                 save_config(cfg)
 
         SimWindow(self.root, load_params=load, save_params=save)
-        self.write_log("Simulator opened: the bot's real brain playing a practice arena (1x/2x/5x/10x).")
+        self.write_log("Simulator opened: the bot's real brain playing a practice arena (1x-100x), training in the background.")
 
     def clear_ignore(self):
         with CONFIG_LOCK:
@@ -456,6 +459,7 @@ class App:
                "auto_shot_every": auto_every,
                "auto_shots": bool(self.shots_on_var.get()),
                "overlay": bool(self.overlay_var.get()),
+               "fast_capture": bool(self.fast_var.get()),
                "tolerance": [round(v * 30 / 14), v, v]}
         if any(cfg.get(k) != val for k, val in new.items()):
             cfg.update(new)
@@ -510,10 +514,22 @@ def selftest():
         lab, radius = measure_blob(img, *xy)
         cfg["colors"][name] = {"lab": lab, "radius": radius}
     found = Detector(cfg).detect(img)
-    return len(found["player"]) == 1 and len(found["enemy_bullet"]) == 1
+    if not (len(found["player"]) == 1 and len(found["enemy_bullet"]) == 1):
+        return False
+    # the simulator's training runs on worker processes: check they start inside the exe too
+    import simulator
+    pool, _n = simulator.make_pool()
+    if pool is None:
+        return False
+    try:
+        return all(pool.map(simulator.selftest_worker, [1, 2]))
+    finally:
+        pool.terminate()
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()  # the simulator trains on worker processes (also inside the exe)
     args = sys.argv[1:]
     if args and args[0] == "--selftest":
         out = os.path.join(os.path.dirname(CONFIG_PATH), "selftest.txt")

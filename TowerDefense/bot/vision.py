@@ -215,6 +215,12 @@ class Detector:
         self.ignore = cfg.get("ignore", [])  # things marked "not a thing" in the photo trainer
         player = (cfg.get("colors", {}).get("player") or {}).get("lab")
         self.player_shades = shaded_player_colors(player) if player else []
+        # Backup for finding the player, only used when nothing else was: the preset gray, in case
+        # the calibrated/trained player color drifted (a wrong click in the photo trainer) or another
+        # kind was trained to a gray so close that it took over the player's blobs.
+        pr = float((cfg.get("colors", {}).get("player") or {}).get("radius", 0) or 0)
+        preset = PRESET["colors"]["player"]["lab"]
+        self.backup_player = (preset, pr) if pr > 0 else None
         # "Danger size": treat some kinds as bigger than they look so the bot keeps more distance.
         self.expand = {k: float(v) for k, v in cfg.get("expand", {}).items()}
         # Group classes whose colors are practically the same (calibration clicks on the same red
@@ -319,7 +325,8 @@ class Detector:
                         used_rings.add(ring)
                     elif "shooter_bullet" in names and r < 2.5 * dict(members).get("shooter_bullet", r):
                         cls = "shooter_bullet"
-                ignored = bool(self.ignore) and self._ignored(lab, r)
+                # Never ignore the player: a "not a thing" on it once would blind the bot for good.
+                ignored = bool(self.ignore) and cls != "player" and self._ignored(lab, r)
                 if ignored and not keep_ignored:
                     continue
                 name = "enemy_bullet" if cls in BULLET_CLASSES else cls  # all bullets are dodged the same way
@@ -331,7 +338,20 @@ class Detector:
                 if g not in used_rings and g[2] >= 2.2 * smallest:
                     found.append({"name": "shooter", "cls": "shooter", "x": g[0], "y": g[1], "r": g[2],
                                   "lab": [float(v) for v in labs[0]]})
+        if self.backup_player and not any(d["cls"] == "player" for d in found):
+            found += self._backup_player(lab_img)
         return found
+
+    def _backup_player(self, lab_img):
+        s = self.scale
+        lab_p, r_exp = self.backup_player
+        out = []
+        for (x, y, r, lab, solid, _box) in self.blobs(lab_img, [lab_p], min_r=r_exp * 0.6 / s):
+            x, y, r = x * s + s / 2, y * s + s / 2, r * s
+            if 0.65 * r_exp <= r <= 1.6 * r_exp and solid >= MIN_SOLIDITY:
+                out.append({"name": "player", "cls": "player", "x": x, "y": y, "r": r,
+                            "lab": [float(v) for v in lab], "ignored": False})
+        return out
 
     def detect(self, bgr):
         """Returns {class name: [(x, y, radius), ...]} in full-size pixel coordinates."""

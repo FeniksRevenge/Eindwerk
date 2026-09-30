@@ -8,9 +8,10 @@ Brain and Tracker it uses in Roblox, including its reaction delay.
 - 10 HP; every hit costs 1. Killed mobs sometimes drop a green circle: walk over it for +2 HP.
 - Purple tanks split into 3 tiny fast mobs when they die.
 - It gets harder over time (an extra enemy every 15 s), like real waves.
-- When the player reaches 0/10 HP the run stops and (with auto-train on) it trains: it tries small
-  changes to its dodge settings, replays the same fights with each at full speed, and keeps a change
-  only if it survives longer. The best settings are saved and also used by the real bot.
+- It keeps training while you watch: worker processes on the other CPU cores play test fights at
+  full speed with small changes to the dodge settings and keep a change only if it survives longer.
+  Better settings are used right away (also in the fight you're watching), saved, and used by the
+  real bot too. When the player reaches 0/10 HP it simply plays again.
 
 Open it from the app ("Simulator") or run:  py simulator.py
 """
@@ -31,6 +32,7 @@ W, H = 2534, 1239          # same size as the real play area in your screenshots
 PR = 26.0                  # player radius
 PSPEED = 700.0             # player speed (px/s), as measured in the real game
 SIM_DT = 1 / 60
+SPEEDS = (1, 2, 5, 10, 100)
 BOT_DT = 1 / 14            # the real bot decides about 14x per second
 LATENCY = 0.07             # screenshot -> keys delay
 MAX_HP = 10
@@ -277,45 +279,83 @@ def mutate(params, rnd):
     return new
 
 
-class Trainer:
-    """Hill climbing on the dodge settings. Each round: pick 3 fights (fixed seeds so every candidate
-    faces the same bullets), score the current best on them, then try `candidates` mutations and keep
-    any that beat it. Runs on a background thread."""
+def _episode(job):
+    """One training fight, run in a worker process: (scenario, seed, params) -> score."""
+    scenario, seed, params = job
+    return run_episode(scenario, seed, params)
 
-    def __init__(self, params, scenario, on_sim=None, on_status=None, candidates=6, seeds_per=3):
+
+def selftest_worker(x):
+    """Used by the exe's self-test to check training worker processes start."""
+    return run_episode("Mixed", x, default_params(), cap=2.0) > 0
+
+
+def make_pool():
+    """Worker processes for training on the other CPU cores (training runs in parallel with the
+    fight you watch). Returns (pool or None, number of workers)."""
+    workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    try:
+        import multiprocessing as mp
+        return mp.get_context("spawn").Pool(workers), workers
+    except Exception:
+        return None, 1
+
+
+class Trainer:
+    """Hill climbing on the dodge settings. Each round: pick a few fights (fixed seeds so every
+    candidate faces the same bullets), play them with the current best and with several random
+    changes of it (all at once, on the worker processes), and keep the best change if it beats the
+    current settings by more than 3%."""
+
+    def __init__(self, params, scenario, on_status=None, pool=None, workers=1, candidates=None, seeds_per=4):
         self.best = dict(params)
         self.scenario = scenario
-        self.on_sim, self.on_status = on_sim, on_status or (lambda s: None)
-        self.candidates, self.seeds_per = candidates, seeds_per
+        self.on_status = on_status or (lambda s: None)
+        self.pool, self.workers = pool, workers
+        # more cores = more changes tried per round, in about the same time
+        self.candidates = candidates or max(6, 2 * workers)
+        self.seeds_per = seeds_per
         self.rnd = random.Random()
         self.stop = threading.Event()
+        self.rounds = 0
         self.improved = 0
         self.best_score = None
 
-    def score(self, params, seeds, label):
-        total = 0.0
-        for i, seed in enumerate(seeds, 1):
-            self.on_status(f"{label}: fight {i}/{len(seeds)}")
-            total += run_episode(self.scenario, seed, params, on_sim=self.on_sim, stop=self.stop)
+    def _run_all(self, jobs):
+        if self.pool is not None:
+            res = self.pool.map_async(_episode, jobs)
+            while not res.ready():
+                if self.stop.is_set():
+                    return None
+                res.wait(0.2)
+            return res.get()
+        out = []
+        for job in jobs:
             if self.stop.is_set():
                 return None
-        return total / len(seeds)
+            out.append(run_episode(*job, stop=self.stop))
+        return out
 
     def round(self):
+        """One round. Returns True if it found better settings (now in self.best)."""
+        self.rounds += 1
         seeds = [self.rnd.randrange(1_000_000) for _ in range(self.seeds_per)]
-        base = self.score(self.best, seeds, "Measuring current settings")
-        if base is None:
-            return
+        cands = [self.best] + [mutate(self.best, self.rnd) for _ in range(self.candidates)]
+        self.on_status(f"round {self.rounds}: trying {self.candidates} changes on {len(seeds)} fights "
+                       f"({self.workers} core{'s' if self.workers > 1 else ''})")
+        results = self._run_all([(self.scenario, s, c) for c in cands for s in seeds])
+        if results is None:
+            return False
+        n = len(seeds)
+        scores = [sum(results[i * n:(i + 1) * n]) / n for i in range(len(cands))]
+        base = scores[0]
+        best_i = max(range(1, len(cands)), key=lambda i: scores[i])
+        if scores[best_i] > base * 1.03:
+            self.best, self.best_score = cands[best_i], scores[best_i]
+            self.improved += 1
+            return True
         self.best_score = base
-        for c in range(1, self.candidates + 1):
-            cand = mutate(self.best, self.rnd)
-            s = self.score(cand, seeds, f"Trying change {c}/{self.candidates} (best {base:.0f}s)")
-            if s is None:
-                return
-            if s > base * 1.03:
-                self.best, base = cand, s
-                self.best_score = s
-                self.improved += 1
+        return False
 
 
 class SimWindow:
@@ -333,8 +373,8 @@ class SimWindow:
         self.speed = 1
         self.paused = False
         self.speed_btns = {}
-        for sp in (1, 2, 5, 10):
-            b = ttk.Button(bar, text=f"{sp}x", width=4, command=lambda sp=sp: self.set_speed(sp))
+        for sp in SPEEDS:
+            b = ttk.Button(bar, text=f"{sp}x", width=5, command=lambda sp=sp: self.set_speed(sp))
             b.pack(side="left", padx=(0, 4))
             self.speed_btns[sp] = b
         self.pause_btn = ttk.Button(bar, text="Pause", command=self.toggle_pause)
@@ -343,11 +383,10 @@ class SimWindow:
         self.scen = tk.StringVar(value="Mixed")
         box = ttk.Combobox(bar, textvariable=self.scen, values=list(SCENARIOS), state="readonly", width=15)
         box.pack(side="left")
-        box.bind("<<ComboboxSelected>>", lambda _e: self.restart())
-        self.auto = tk.BooleanVar(value=True)
-        ttk.Checkbutton(bar, text="Auto-train when it dies", variable=self.auto).pack(side="left", padx=(10, 4))
-        self.train_btn = ttk.Button(bar, text="Train now", command=self.start_training)
-        self.train_btn.pack(side="left", padx=(4, 0))
+        box.bind("<<ComboboxSelected>>", lambda _e: self.scenario_changed())
+        self.train_on = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Keep training while it plays", variable=self.train_on,
+                        command=self.train_toggled).pack(side="left", padx=(10, 4))
         ttk.Button(bar, text="Reset training", command=self.reset_training).pack(side="left", padx=(4, 0))
         self.info = tk.StringVar()
         tk.Label(self.root, textvariable=self.info, bg="#07090d", fg="#e4e7ec", font=("Consolas", 10),
@@ -355,14 +394,21 @@ class SimWindow:
         self.canvas = tk.Canvas(self.root, width=int(W * self.SCALE), height=int(H * self.SCALE),
                                 bg="#05070b", highlightthickness=0)
         self.canvas.pack(padx=10, pady=(4, 10))
+        self.pool, self.workers = None, 1
         self.trainer = None
-        self.train_status = ""
+        self.train_status = "starting..."
+        self.train_result = ""
         self.message = ""
+        self.best_run = 0.0
+        self.died_at = None
+        self.closed = False
         self.restart()
         self.set_speed(1)
         self.last = time.perf_counter()
+        self.last_draw = 0.0
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(16, self.loop)
+        self.train_toggled()
 
     # ------------------------------------------------------------------ controls
     def set_speed(self, sp):
@@ -378,74 +424,109 @@ class SimWindow:
 
     def restart(self):
         self.sim = Sim(self.scen.get(), brain_kw=self.params)
+        self.died_at = None
         self.real_start, self.sim_start = time.perf_counter(), 0.0
 
+    def scenario_changed(self):
+        self.restart()
+        if self.trainer:  # train on the fights you're watching
+            self.stop_training()
+            self.train_toggled()
+
     def reset_training(self):
-        if self.trainer:
-            self.trainer.stop.set()
+        self.stop_training()
         self.params = default_params()
         self.save_params(None)
+        self.train_result = ""
         self.message = "Training reset to the default settings."
         self.restart()
+        self.train_toggled()
+
+    # ------------------------------------------------------------------ background training
+    def train_toggled(self):
+        if self.train_on.get() and self.trainer is None and not self.closed:
+            self.start_training()
+        elif not self.train_on.get():
+            self.stop_training()
+            self.train_status = "off"
+
+    def stop_training(self):
+        if self.trainer:
+            self.trainer.stop.set()
+            self.trainer = None
 
     def start_training(self):
-        if self.trainer:
-            return
-        self.message = ""
-        scen = self.scen.get()
-
-        def on_sim(sim):
-            self.sim = sim  # show the fight being trained on
-
-        def on_status(text):
-            self.train_status = text
-
-        self.trainer = Trainer(self.params, scen, on_sim=on_sim, on_status=on_status)
+        tr = Trainer(self.params, self.scen.get(), on_status=self._set_status)
+        self.trainer = tr
 
         def work():
-            tr = self.trainer
-            tr.round()
-            if not tr.stop.is_set():
-                if tr.improved:
-                    self.params = tr.best
+            if self.pool is None:
+                self._set_status("starting the training workers...")
+                self.pool, self.workers = make_pool()
+            tr.pool, tr.workers = self.pool, self.workers
+            tr.candidates = max(6, 2 * self.workers)
+            while not tr.stop.is_set():
+                better = tr.round()
+                if tr.stop.is_set():
+                    break
+                if better:
+                    self.params = dict(tr.best)
                     self.save_params(self.params)
-                    self.message = (f"Training found {tr.improved} better setting(s): survives ~{tr.best_score:.0f}s "
-                                    "per fight now. Saved; the real bot uses them too.")
+                    # the fight you're watching switches to the better settings right away
+                    for name, value in self.params.items():
+                        setattr(self.sim.brain, name, float(value))
+                    self.train_result = (f"round {tr.rounds} found better settings (~{tr.best_score:.0f}s per test fight), "
+                                         f"saved and used right away (also by the real bot). Improvements: {tr.improved}")
                 else:
-                    self.message = f"Training round done: no change beat the current settings (~{tr.best_score:.0f}s)."
-            self.trainer = None
-            try:
-                self.root.after(0, self.restart)
-            except (RuntimeError, tk.TclError):
-                pass
+                    self.train_result = (f"round {tr.rounds}: no change beat the current settings "
+                                         f"(~{tr.best_score:.0f}s per test fight). Improvements: {tr.improved}")
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _set_status(self, text):
+        self.train_status = text
+
     def close(self):
-        if self.trainer:
-            self.trainer.stop.set()
+        self.closed = True
+        self.stop_training()
+        if self.pool is not None:
+            try:
+                self.pool.terminate()
+            except Exception:
+                pass
         self.root.destroy()
 
     # ------------------------------------------------------------------ loop
     def loop(self):
+        if self.closed:
+            return
         now = time.perf_counter()
         frame_dt = min(0.1, now - self.last)
         self.last = now
-        if not self.paused and self.trainer is None:
+        if self.sim.dead:
+            # Died: show it for a moment, then play again (with the newest trained settings).
+            if self.died_at is None:
+                self.died_at = now
+                self.best_run = max(self.best_run, self.sim.t)
+                self.message = f"Died after {self.sim.t:.0f}s (best {self.best_run:.0f}s). Playing again..."
+            elif now - self.died_at > 1.5:
+                self.restart()
+        elif not self.paused:
             todo = frame_dt * self.speed
-            deadline = now + 0.05  # don't freeze the window if the PC can't keep up
+            # At high speed spend most of the time simulating (it still can't freeze the window).
+            deadline = now + (0.08 if self.speed >= 10 else 0.04)
             while todo > 1e-9 and time.perf_counter() < deadline and not self.sim.dead:
                 step = min(SIM_DT, todo)
                 self.sim.step(step)
                 todo -= step
-            if self.sim.dead and self.auto.get():
-                self.message = f"Died after {self.sim.t:.0f}s. Training a better way to dodge..."
-                self.start_training()
-        try:
-            self.draw()
-        except (RuntimeError, ValueError):  # the training thread changed a list mid-draw
-            pass
-        self.root.after(33 if self.trainer else 16, self.loop)
+        # Fast speeds redraw less often so more time goes into playing.
+        if now - self.last_draw >= (0.1 if self.speed >= 10 else 0.0):
+            self.last_draw = now
+            try:
+                self.draw()
+            except (RuntimeError, ValueError):
+                pass
+        self.root.after(4 if self.speed >= 10 else 16, self.loop)
 
     def draw(self):
         c, s, sim = self.canvas, self.SCALE, self.sim
@@ -489,13 +570,14 @@ class SimWindow:
         if sim.dead:
             c.create_text(W * s / 2, H * s / 2, text="DIED", fill="#ff5050", font=("Consolas", 36, "bold"))
         minutes = max(sim.t, 1e-6) / 60
-        if self.trainer:
-            line = f"TRAINING (full speed) - {self.train_status}   fight time {sim.t:4.0f}s  HP {max(sim.hp, 0)}/{MAX_HP}"
-        else:
-            real = max(1e-6, time.perf_counter() - self.real_start)
-            actual = (sim.t - self.sim_start) / real
-            line = (f"time {sim.t:5.0f}s   HP {max(sim.hp, 0)}/{MAX_HP}   hits {sim.hits} ({sim.hits / minutes:.1f}/min)   "
-                    f"kills {sim.kills}   keys {''.join(sim.keys).upper() or '-':2}   running at {actual:.1f}x")
+        real = max(1e-6, time.perf_counter() - self.real_start)
+        actual = (sim.t - self.sim_start) / real
+        line = (f"time {sim.t:5.0f}s   HP {max(sim.hp, 0)}/{MAX_HP}   hits {sim.hits} ({sim.hits / minutes:.1f}/min)   "
+                f"kills {sim.kills}   keys {''.join(sim.keys).upper() or '-':2}   running at {actual:.0f}x"
+                + ("   (as fast as this PC can)" if actual < self.speed * 0.8 else ""))
+        line += f"\nTraining in the background: {self.train_status}"
+        if self.train_result:
+            line += f"\nLast training: {self.train_result}"
         self.info.set(line + (f"\n{self.message}" if self.message else ""))
 
 
@@ -522,5 +604,7 @@ def _save_params_file(params):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     SimWindow()
     tk.mainloop()

@@ -67,7 +67,12 @@ def learn(cfg, cls, lab, radius):
 
 
 def forget(cfg, lab, radius):
-    """Remember that this color+size is not a thing."""
+    """Remember that this color+size is not a thing (never the player's color and size)."""
+    pl = (cfg.get("colors") or {}).get("player") or {}
+    if pl.get("lab") and pl.get("radius"):
+        tol = np.array(cfg.get("tolerance", [30, 14, 14]))
+        if np.all(np.abs(np.array(pl["lab"]) - np.array(lab)) <= tol) and 0.65 <= radius / float(pl["radius"]) <= 1.6:
+            return
     ignore = cfg.setdefault("ignore", [])
     for ig in ignore:
         if np.all(np.abs(np.array(ig["lab"]) - np.array(lab)) < 6) and 0.8 < radius / ig["radius"] < 1.25:

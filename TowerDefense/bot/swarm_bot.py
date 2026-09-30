@@ -104,10 +104,12 @@ class ScreenGrabber:
     capture and always works on the freshest frame. Uses the fast Desktop Duplication API (dxcam)
     when available, otherwise mss."""
 
-    def __init__(self, region):
+    def __init__(self, region, fast=True):
         self.region = region
+        self.fast = fast  # try dxcam
         self.frame, self.frame_time, self.seq = None, 0.0, 0
         self.method = "mss"
+        self.note = ""  # why it uses what it uses, for the log
         self.cond = threading.Condition()
         self.stop = threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
@@ -120,28 +122,74 @@ class ScreenGrabber:
             box = (r["left"], r["top"], r["left"] + r["width"], r["top"] + r["height"])
             if cam is not None:
                 return cam, box
-        except Exception:
-            pass
+        except Exception as e:
+            self.note = f"fast capture (dxcam) not available ({e}), using mss"
         return None, None
 
+    def _dxcam_ok(self, cam, box, sct):
+        """dxcam can capture the wrong screen (laptops with 2 graphics cards), black frames, or
+        different colors (HDR). Compare it with a normal screenshot before trusting it."""
+        img = None
+        for _ in range(100):  # dxcam gives None until the screen changes
+            img = cam.grab(region=box)
+            if img is not None:
+                break
+            time.sleep(0.01)
+        ref = np.asarray(sct.grab(self.region))[:, :, :3]
+        if img is None:
+            return True  # nothing on screen changed for a second: can't tell, try it
+        if img.shape[:2] != ref.shape[:2]:
+            return False
+        def small(x):  # blurred, so things that moved a little between the two shots still match
+            x = cv2.resize(np.ascontiguousarray(x[:, :, :3]), (160, 90), interpolation=cv2.INTER_AREA)
+            return cv2.GaussianBlur(x, (7, 7), 0).astype(np.int16)
+        a, b = small(img), small(ref)
+        diff = np.abs(a - b).max(axis=2)
+        # The game is mostly black, so compare where there's something to see (HUD, mobs, text).
+        content = np.maximum(a.max(axis=2), b.max(axis=2)) > 25
+        if content.sum() >= 30:
+            return float(np.median(diff[content])) < 12 and float(diff.mean()) < 12
+        return float(diff.mean()) < 12
+
     def _run(self):
-        cam, box = self._open_dxcam()
-        sct = None if cam else mss.mss()
+        sct = mss.mss()
+        cam, box = self._open_dxcam() if self.fast else (None, None)
+        if cam is not None:
+            try:
+                good = self._dxcam_ok(cam, box, sct)
+            except Exception:
+                good = False
+            if good:
+                self.note = "screen capture: fast (dxcam)"
+            else:
+                self.note = "fast capture (dxcam) gave a different picture than a normal screenshot, using mss"
+                cam = None
+        elif not self.fast:
+            self.note = "screen capture: mss (fast capture is off in the settings)"
         self.method = "dxcam" if cam else "mss"
+        last_real = time.perf_counter()
         while not self.stop.is_set():
             t = time.perf_counter()
             try:
                 if cam:
                     img = cam.grab(region=box)
                     if img is None:  # screen hasn't changed since the last grab
-                        time.sleep(0.002)
-                        continue
+                        if t - last_real > 0.5:
+                            # nothing new for a while (e.g. dxcam lost the screen): check with mss
+                            img = np.asarray(sct.grab(self.region))
+                            last_real = t
+                        else:
+                            time.sleep(0.002)
+                            continue
+                    else:
+                        last_real = t
                     frame = np.ascontiguousarray(img[:, :, :3])
                 else:
                     frame = np.ascontiguousarray(np.asarray(sct.grab(self.region))[:, :, :3])
             except Exception:
                 if cam:  # dxcam trouble (e.g. after a resolution change): fall back to mss
-                    cam, sct, self.method = None, mss.mss(), "mss"
+                    cam, self.method = None, "mss"
+                    self.note = "fast capture (dxcam) stopped working, switched to mss"
                     continue
                 time.sleep(0.01)
                 continue
@@ -160,11 +208,11 @@ class ScreenGrabber:
 
 
 class WindowsIO:
-    def __init__(self, region, require_focus=True, fire_with="space"):
+    def __init__(self, region, require_focus=True, fire_with="space", fast_capture=True):
         self.region = region  # {"left", "top", "width", "height"} in screen pixels
         self.require_focus = require_focus
         self.fire_with = fire_with  # "space" or "mouse" (left click)
-        self.grabber = ScreenGrabber(region)
+        self.grabber = ScreenGrabber(region, fast_capture)
         self.seq = 0
         self.frame_time = 0.0
         self.keys = set()
@@ -517,6 +565,7 @@ class BotController:
 
     def _loop(self):
         bot = None
+        capture_logged = blind_shot = False
         auto_every, next_auto = 0, 0.0
         frames, fps_t = 0, time.perf_counter()
         last_status = None
@@ -531,8 +580,11 @@ class BotController:
                     try:
                         cfg = load_config()  # re-read, in case calibration changed it
                         bot = BotRunner(cfg, WindowsIO(cfg["region"], cfg.get("require_focus", True),
-                                                          cfg.get("fire_with", "space")))
+                                                          cfg.get("fire_with", "space"),
+                                                          cfg.get("fast_capture", True)))
                         self.running = True
+                        capture_logged = False
+                        blind_shot = False
                         last_status = None
                         auto_every = float(cfg.get("auto_shot_every", 10)) if cfg.get("auto_shots", True) else 0
                         next_auto = time.perf_counter() + auto_every
@@ -575,6 +627,17 @@ class BotController:
                 next_auto = time.perf_counter() + auto_every
                 if len(list_photos(SHOTS_DIR)) < 300 if os.path.isdir(SHOTS_DIR) else True:
                     self._take_screenshot(bot)
+            grabber = getattr(bot.io, "grabber", None)
+            if not capture_logged and grabber is not None and grabber.note:
+                self.on_event("log", grabber.note[0].upper() + grabber.note[1:] + ".")
+                capture_logged = True
+            # Never found the player in the first 3 s: save what the bot sees (once per run) to check it.
+            if not blind_shot and status == "waiting" and bot.waiting_time() > 3.0:
+                blind_shot = True
+                self._take_screenshot(bot)
+                self.on_event("log", "Can't find you (the gray ball) for 3 s. Saved a screenshot of what the bot sees: "
+                                     "open it (Open screenshots folder). If you're on it but not circled in the _bot.png, "
+                                     "click 'Use preset colors' or 'Clear ignore list', or try turning off fast capture.")
             shown = "Waiting for the player to appear..." if status == "waiting" else "Running"
             if shown != last_status:
                 self.on_event("status", shown)
