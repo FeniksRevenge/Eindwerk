@@ -13,7 +13,8 @@ class BotRunner:
     def __init__(self, cfg, io, params=None):
         self.cfg = cfg
         self.io = io
-        self.params = params  # Brain settings (from training), or None for defaults
+        # Dodge settings trained in the simulator (config "brain_params"), or the defaults.
+        self.params = params if params is not None else cfg.get("brain_params")
         self.detector = Detector(cfg)
         # The player blinks when hit and banners cover the screen, so only give up after a while.
         self.death_timeout = max(3.0, float(cfg.get("death_timeout", 4.0)))

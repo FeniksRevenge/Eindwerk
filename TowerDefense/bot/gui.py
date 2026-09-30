@@ -142,6 +142,10 @@ class App:
         self.top_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(wrap, text="Keep this window on top", variable=self.top_var,
                         command=lambda: root.attributes("-topmost", self.top_var.get())).pack(anchor="w", pady=(2, 0))
+        self.overlay = None
+        self.overlay_var = tk.BooleanVar(value=cfg.get("overlay", False))
+        ttk.Checkbutton(wrap, text="Show overlay on screen (what the bot sees, live)", variable=self.overlay_var,
+                        command=self.toggle_overlay).pack(anchor="w", pady=(2, 0))
         self.shots_on_var = tk.BooleanVar(value=cfg.get("auto_shots", True))
         ttk.Checkbutton(wrap, text="Take pictures automatically while the bot plays", variable=self.shots_on_var,
                         command=self.save_settings).pack(anchor="w", pady=(2, 6))
@@ -224,6 +228,8 @@ class App:
             self.write_log("Your colors come from an older calibration that can mistake the background for a mob. "
                            "Click 'Use preset colors' to replace them.")
         root.protocol("WM_DELETE_WINDOW", self.close)
+        if self.overlay_var.get():
+            root.after(500, self.toggle_overlay)
         root.after(50, self.poll)
 
     # ------------------------------------------------------------------ ui helpers
@@ -305,9 +311,37 @@ class App:
                             "Each photo is deleted once it's been trained on." if n else
                             "No photos yet. Press / while playing to save some, then train on them here.")
 
+    def toggle_overlay(self):
+        self.save_settings()
+        if self.overlay_var.get() and self.overlay is None:
+            from overlay import Overlay
+            try:
+                region = load_config()["region"]
+            except Exception:
+                from swarm_bot import main_monitor
+                region = main_monitor()
+            self.overlay = Overlay(self.root, region, lambda: self.ctl.latest if self.ctl.running else None)
+            self.write_log("Overlay on: cyan circles show what the bot detects, white = you, arrow = keys.")
+        elif not self.overlay_var.get() and self.overlay is not None:
+            self.overlay.close()
+            self.overlay = None
+
     def open_simulator(self):
         from simulator import SimWindow
-        SimWindow(self.root)
+
+        def load():
+            return (read_config() or {}).get("brain_params")
+
+        def save(params):
+            with CONFIG_LOCK:
+                cfg = read_config_or_empty()
+                if params is None:
+                    cfg.pop("brain_params", None)
+                else:
+                    cfg["brain_params"] = params
+                save_config(cfg)
+
+        SimWindow(self.root, load_params=load, save_params=save)
         self.write_log("Simulator opened: the bot's real brain playing a practice arena (1x/2x/5x/10x).")
 
     def clear_ignore(self):
@@ -409,6 +443,7 @@ class App:
                "fire_with": "space" if self.fire_var.get() == "Space" else "mouse",
                "auto_shot_every": auto_every,
                "auto_shots": bool(self.shots_on_var.get()),
+               "overlay": bool(self.overlay_var.get()),
                "tolerance": [round(v * 30 / 14), v, v]}
         if any(cfg.get(k) != val for k, val in new.items()):
             cfg.update(new)

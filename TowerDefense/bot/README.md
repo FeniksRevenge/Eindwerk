@@ -76,17 +76,26 @@ If something isn't circled, or wrong things are, calibrate that thing again.
 ## Run
 Go to Roblox, start a run and press **`*`** (or click Start). Press **`-`** to stop.
 
-## Simulator (watch the bot play)
-Click **Simulator** in the app. It opens a practice arena where the bot's **real brain** plays a simulated
-version of the game (orange shooters, yellow mobs shooting in all directions, grunts, tanks, the boss with
-its bullet rings), with the same reaction delay as in Roblox. Your player shoots back, so mobs die and respawn.
+## Simulator (watch the bot play and train)
+Click **Simulator** in the app. The bot's **real brain** plays a practice arena (orange shooters, yellow
+mobs shooting in all directions, grunts, purple tanks that **split into 3 tiny mobs** when they die, the
+boss with its bullet rings), with the same reaction delay as in Roblox. Your player shoots back.
 
-- **1x / 2x / 5x / 10x**: speed. **Pause**, **Restart**, and a scenario list (Mixed, Many shooters, Boss, Swarm).
-- The top bar shows time, **hits (per minute)**, kills, the keys the bot holds, and the real speed it manages.
-- Your player flashes red when hit; the green arrow shows the direction it's moving.
+- **HP bar 10/10**: every hit costs 1 HP. Killed mobs sometimes (5%) drop a **green circle**: walking over
+  it gives **+2 HP**. It gets harder over time (an extra enemy every 15 s), like real waves.
+- **1x / 2x / 5x / 10x** speed, **Pause**, **Restart**, and a scenario list (Mixed, Many shooters, Boss, Swarm).
+- **Auto-train when it dies** (on by default): at **0/10** the run stops and it trains a better way to dodge,
+  at full speed: it measures the current dodge settings on 3 fights, then tries 6 small changes on the
+  *same* fights and keeps a change only if it survives longer. You can watch the training fights. Then it
+  plays again with the improved settings. **Train now** starts a round anytime; **Reset training** goes back
+  to the defaults.
+- The trained settings are saved in `config.json` (`brain_params`) and **the real bot uses them too**.
 
-The simulator is also how the dodging was tuned. Before/after on the same fights (hits per minute):
-Mixed 11.8 -> 2.3, Many shooters 6.5 -> 1.0, Boss 11 -> 2.8; time spent in corners went from ~17 s/min to ~5 s/min.
+## Overlay (see what the bot sees on your screen)
+Tick **Show overlay on screen** in the app. While the bot runs, it draws right on top of the game:
+cyan circles around everything it detects (with labels), a white circle and **YOU** on your player,
+the aim line, and an arrow for the keys it's holding; a line at the bottom counts what it sees.
+The overlay is click-through and hidden from screen capture, so the bot never sees its own drawings.
 
 ## Photo trainer (teach it from screenshots)
 Press **`/`** while playing to save screenshots, then train on them in the app (**PHOTO TRAINER**).

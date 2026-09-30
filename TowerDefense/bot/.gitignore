@@ -3,3 +3,4 @@ config.json.tmp
 __pycache__/
 screenshots/
 selftest.txt
+sim_params.json

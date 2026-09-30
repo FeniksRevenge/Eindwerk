@@ -371,6 +371,7 @@ class BotController:
         self._quit = threading.Event()
         self._snap = threading.Event()
         self.shots_saved = 0
+        self.latest = None  # the bot's latest tick (what it sees/decided), for the overlay
         self.running = False
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -444,6 +445,7 @@ class BotController:
                 continue
             try:
                 status = bot.step()
+                self.latest = bot.last  # for the on-screen overlay
                 while bot.notes:
                     self.on_event("log", bot.notes.pop(0))
             except Exception as e:
