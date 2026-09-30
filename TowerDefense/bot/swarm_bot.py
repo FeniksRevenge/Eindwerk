@@ -19,6 +19,7 @@ import threading
 import time
 
 import cv2
+import cvwin
 import mss
 import numpy as np
 
@@ -267,7 +268,7 @@ def click_through(cfg, crop, names):
             cv2.imshow(win, banner(disp, f"Click on {CLASS_HELP[name]}.   S = skip (not on screen)   Esc = quit"))
             k = -1
             while not clicked and k not in (ord("s"), 27):
-                k = cv2.waitKey(30) & 0xFF
+                k = cvwin.key(win)
             if k == 27:
                 sys.exit("Cancelled, nothing saved.")
             if k == ord("s"):
@@ -277,14 +278,14 @@ def click_through(cfg, crop, names):
             lab, radius = measure_blob(crop, cx, cy)
             if lab is None:
                 cv2.imshow(win, banner(disp, "That's background. Click right on the colored part (the solid middle).  (any key)"))
-                cv2.waitKey(0)
+                cvwin.key_blocking(win)
                 continue
             preview = disp.copy()
             cv2.circle(preview, (int(cx * s), int(cy * s)), max(3, int(radius * s)), (0, 255, 0), 2)
             cv2.imshow(win, banner(preview, f"{name}: size {radius:.0f}px.   ENTER = ok   R = redo"))
             k = -1
             while k not in (13, ord("r")):
-                k = cv2.waitKey(30) & 0xFF
+                k = cvwin.key(win)
             if k == 13:
                 cfg["colors"][name] = {"lab": lab, "radius": round(radius, 1)}
                 print(f"  {name}: color {lab}, size {radius:.0f}px")
@@ -318,7 +319,7 @@ def calibrate(only):
     show_on_top(win, intro)
     k = -1
     while k not in (13, 27):
-        k = cv2.waitKey(30) & 0xFF
+        k = cvwin.key(win)
     cv2.destroyAllWindows()
     if k == 27:
         sys.exit("Cancelled, nothing saved.")
@@ -344,15 +345,19 @@ def view():
     cfg = load_config()
     det = Detector(cfg)
     win = "What the bot sees (Q = quit)"
+    shown = False
     with mss.mss() as sct:
         while True:
+            if shown and cvwin.window_closed(win):
+                break  # closed with the X button
+            shown = True
             t = time.perf_counter()
             frame = np.ascontiguousarray(np.asarray(sct.grab(cfg["region"]))[:, :, :3])
             dets = det.detect(frame)
             ms = (time.perf_counter() - t) * 1000
             disp, _ = fit_to_screen(annotate(frame, dets, extra=f"({ms:.0f} ms)"), 1000, 600)
             cv2.imshow(win, disp)
-            if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+            if cvwin.key(win, 1) in (ord("q"), 27):
                 break
     cv2.destroyAllWindows()
 

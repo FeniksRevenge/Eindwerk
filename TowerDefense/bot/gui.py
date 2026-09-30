@@ -289,14 +289,24 @@ class App:
     # ------------------------------------------------------------------ actions
     def start(self):
         if self.proc and self.proc.poll() is None:
-            self.write_log("Close the calibration/test window first.")
-            return
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            self.proc = None
+            self.write_log("Closed the calibration/test window so the bot can use the screen.")
         self.ctl.start()
 
     def launch(self, *args):
         if self.proc and self.proc.poll() is None:
-            self.write_log("A calibration/test window is already open.")
-            return
+            # An old calibration/test window is still running (or hung invisibly): close it.
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=3)
+            except Exception:
+                pass
+            self.write_log("Closed the previous calibration/test window.")
+        self.proc = None
         self.ctl.stop()
         if FROZEN:  # SwarmBot.exe runs calibrate/view itself when given them as arguments
             cmd = [sys.executable, *args]

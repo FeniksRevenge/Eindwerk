@@ -22,6 +22,7 @@ import glob
 import os
 
 import cv2
+import cvwin
 import numpy as np
 
 from vision import CLASS_HELP, CLASSES, DRAW_COLORS, Detector, measure_blob
@@ -150,7 +151,7 @@ def _menu(win, img, title):
     lines += ["  x = NOT A THING (ignore it from now on)", "  Esc = cancel"]
     cv2.imshow(win, _bar(img, lines))
     while True:
-        k = cv2.waitKey(0) & 0xFF
+        k = cvwin.key_blocking(win)
         if k == 27:
             return None
         if k == ord("x"):
@@ -191,7 +192,7 @@ def train_semi(cfg, folder, save):
             clicks.clear()
             k = -1
             while not clicks and k not in (13, 27, ord("s"), ord("u")):
-                k = cv2.waitKey(30) & 0xFF
+                k = cvwin.key(win)
             if k == 27:
                 cv2.destroyAllWindows()
                 return
@@ -238,7 +239,7 @@ def train_semi(cfg, folder, save):
                 lab, radius = measure_blob(img, int(cx), int(cy))
                 if lab is None:
                     cv2.imshow(win, _bar(shown, ["That's background. Click right on the colored part.  (any key)"]))
-                    cv2.waitKey(0)
+                    cvwin.key_blocking(win)
                     continue
                 new = {"cls": choice, "name": choice, "x": cx, "y": cy, "r": radius, "lab": lab, "status": "added"}
                 items.append(new)
