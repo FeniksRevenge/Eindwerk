@@ -4,3 +4,4 @@ __pycache__/
 screenshots/
 selftest.txt
 sim_params.json
+*.png
