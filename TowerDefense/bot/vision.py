@@ -82,6 +82,68 @@ def shaded_player_colors(lab):
     return out
 
 
+def solidity(sel, area):
+    """How 'solid' a shape is: its area divided by the area of its convex outline. Balls and squares
+    are ~0.9-1.0; floating text like "+10" (thin strokes with gaps and holes) is much lower."""
+    if area < 12:
+        return 1.0  # too small to judge
+    contours, _ = cv2.findContours(sel.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 1.0
+    hull = cv2.contourArea(cv2.convexHull(max(contours, key=cv2.contourArea)))
+    return min(1.0, area / hull) if hull > 0 else 1.0
+
+
+# Kinds that are always a filled ball/square/diamond; anything of their color that isn't solid is text.
+SOLID_KINDS = {"player", "grunt", "runner", "shooter", "tank_mini", "enemy_bullet", "shooter_bullet", "yellow_bullet"}
+MIN_SOLIDITY = 0.75
+
+
+def text_rows(boxes):
+    """Indexes of boxes that look like letters/digits of one line of text: 2+ pieces of similar
+    height, tops lined up, side by side with small gaps (e.g. the "1" and "0" of a "+10" popup)."""
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    order = sorted(range(n), key=lambda i: boxes[i][0])
+    for a_i, i in enumerate(order):
+        xi, yi, wi, hi = boxes[i]
+        for j in order[a_i + 1:]:
+            xj, yj, wj, hj = boxes[j]
+            hmax = max(hi, hj)
+            if xj - (xi + wi) > 0.8 * hmax:
+                break  # sorted by x: everything further right is too far away
+            if abs(yi - yj) <= 0.25 * hmax and abs(hi - hj) <= 0.35 * hmax and xj >= xi + wi * 0.5:
+                parent[find(i)] = find(j)
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return {i for g in groups.values() if len(g) >= 2 for i in g}
+
+
+def find_rings_near(bgr, lab, balls, ball_r):
+    """Rings around the given balls only (much cheaper than searching the whole screen)."""
+    out = []
+    h, w = bgr.shape[:2]
+    for (x, y) in balls:
+        half = int(ball_r * 5)
+        x0, y0 = max(0, int(x) - half), max(0, int(y) - half)
+        crop = bgr[y0:min(h, int(y) + half), x0:min(w, int(x) + half)]
+        if crop.shape[0] < 8 or crop.shape[1] < 8:
+            continue
+        for (rx, ry, rr) in find_rings(crop, lab, 2, ball_r):
+            g = (rx + x0, ry + y0, rr)
+            if not any(abs(g[0] - o[0]) < 6 and abs(g[1] - o[1]) < 6 for o in out):
+                out.append(g)
+    return out
+
+
 def find_rings(bgr, lab, scale, ball_r):
     """Thin round rings in this color (the orange shooter's ring), as (x, y, r) in full-size pixels.
     The ring is ~1 pixel wide, so the image is shrunk by averaging (keeps a faint ring) and matched
@@ -151,6 +213,8 @@ class Detector:
         self.tol = cfg.get("tolerance", DEFAULT_TOLERANCE)
         self.tol_arr = np.array(self.tol)
         self.ignore = cfg.get("ignore", [])  # things marked "not a thing" in the photo trainer
+        player = (cfg.get("colors", {}).get("player") or {}).get("lab")
+        self.player_shades = shaded_player_colors(player) if player else []
         # "Danger size": treat some kinds as bigger than they look so the bot keeps more distance.
         self.expand = {k: float(v) for k, v in cfg.get("expand", {}).items()}
         # Group classes whose colors are practically the same (calibration clicks on the same red
@@ -189,7 +253,7 @@ class Detector:
                 continue  # screen-sized: a color that matches the background, not a mob
             sel = labels[by:by + bh, bx:bx + bw] == i
             mean_lab = lab_img[by:by + bh, bx:bx + bw][sel].mean(axis=0)
-            out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0, mean_lab))
+            out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0, mean_lab, solidity(sel, area), (bx, by, bw, bh)))
         return out
 
     def _ignored(self, lab, r):
@@ -213,19 +277,28 @@ class Detector:
             smallest = min(m[1] for m in members)
             names = {m[0] for m in members}
             # Orange shooters are a ball inside a ring; orange bullets are the same ball without one.
-            rings = find_rings(bgr, labs[0], s, smallest) if "shooter" in names else None
             blobs = self.blobs(lab_img, labs, min_fill, min_r=smallest * 0.45 / s)
-            if len(members) == 1 and members[0][0] == "player":
+            rings = None
+            if "shooter" in names:
+                balls = [(b[0] * s + s / 2, b[1] * s + s / 2) for b in blobs if b[2] * s < smallest * 2.5]
+                rings = find_rings_near(bgr, labs[0], balls, smallest)
+            player_r = dict(members).get("player")
+            plain_player = player_r and any(0.65 * player_r <= b[2] * s <= 1.6 * player_r and b[4] >= MIN_SOLIDITY
+                                            for b in blobs)
+            if len(members) == 1 and members[0][0] == "player" and not plain_player:
                 # Also look for the player behind the see-through health bar / score panel. Each shade
                 # is checked on its own, so the (equally darkened) white shield doesn't merge with it.
-                for shade in shaded_player_colors(labs[0]):
+                for shade in self.player_shades:
                     for b in self.blobs(lab_img, [shade], min_fill, tol=[16, 9, 9], min_r=smallest * 0.6 / s):
                         if b[3][0] < 60:
                             continue  # too dark: the boss's dark middle, not a shaded player
                         if not any(abs(b[0] - o[0]) < 4 and abs(b[1] - o[1]) < 4 for o in blobs):
                             blobs.append(b)
             used_rings = set()
-            for (x, y, r, lab) in blobs:
+            # Floating text ("+10", "+25"...) in a mob's color: drop whole lines of letters.
+            text = text_rows([b[5] for b in blobs])
+            blobs = [b for i, b in enumerate(blobs) if i not in text or b[2] * s > 60]
+            for (x, y, r, lab, solid, _box) in blobs:
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
                 cls, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
@@ -236,6 +309,9 @@ class Detector:
                     continue
                 if cls == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
                     continue  # HUD text is gray too, but much smaller than the player
+                if cls in SOLID_KINDS and solid < MIN_SOLIDITY and r <= 35:
+                    continue  # floating text ("+10" etc.) in a mob's color: not solid like the real thing
+                              # (only small things: a big mob can look dented when another overlaps it)
                 if rings is not None and cls in ("shooter", "shooter_bullet"):
                     ring = next((g for g in rings if g[2] > r * 1.5 and math.hypot(g[0] - x, g[1] - y) < g[2] * 0.7), None)
                     if ring is not None:

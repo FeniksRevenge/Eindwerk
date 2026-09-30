@@ -8,6 +8,7 @@ game doesn't use, so even where capture-hiding isn't available the bot won't mis
 
 import ctypes
 import os
+import time
 import tkinter as tk
 
 KEY = "#010203"      # this color becomes see-through
@@ -67,7 +68,7 @@ class Overlay:
             self.draw(self.get_last())
         except Exception:
             pass
-        self.win.after(50, self.tick)
+        self.win.after(16, self.tick)  # ~60 fps
 
     def draw(self, last):
         c = self.canvas
@@ -77,14 +78,19 @@ class Overlay:
                           text="Swarm Bot overlay: waiting for the bot to run (press *)")
             return
         counts = {}
-        for name, items in last.get("dets", {}).items():
-            if name == "player":
-                continue
-            for (x, y, r) in items:
-                counts[name] = counts.get(name, 0) + 1
-                c.create_oval(x - r - 3, y - r - 3, x + r + 3, y + r + 3, outline=INK, width=2)
-                if name != "enemy_bullet":
-                    c.create_text(x, y - r - 12, text=LABELS.get(name, name), fill=INK, font=("Consolas", 10))
+        tracks = last.get("tracks")
+        if tracks is not None:
+            # Glide: move everything along its measured speed since the screenshot was taken.
+            dt = min(0.2, max(0.0, time.perf_counter() - last.get("t", time.perf_counter())))
+            items = [(kind, x + vx * dt, y + vy * dt, r) for (kind, x, y, r, vx, vy) in tracks]
+        else:
+            items = [(name, x, y, r) for name, lst in last.get("dets", {}).items() if name != "player"
+                     for (x, y, r) in lst]
+        for (name, x, y, r) in items:
+            counts[name] = counts.get(name, 0) + 1
+            c.create_oval(x - r - 3, y - r - 3, x + r + 3, y + r + 3, outline=INK, width=2)
+            if name != "enemy_bullet":
+                c.create_text(x, y - r - 12, text=LABELS.get(name, name), fill=INK, font=("Consolas", 10))
         p = last.get("player")
         if p:
             x, y, r = p

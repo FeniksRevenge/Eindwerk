@@ -41,8 +41,9 @@ Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It 
 3. Click **Test view** to check everything gets circled.
 
 If the preset doesn't match (different graphics settings), calibrate yourself:
-**Calibrate from screenshot...** lets you pick a screenshot you saved with `/` and click each thing on it,
-so you don't have to catch mobs live.
+**Calibrate from screenshots...** lets you pick **one or more** screenshots you saved with `/` (Ctrl/Shift-click
+to select several) and click things on each: **S** = skip this thing, **N** = next photo, **Esc** = finish.
+Each thing's color and size is the **average of all your clicks** over all photos.
 
 ## Calibrate (once, or again if colors/sizes change)
 Click **Calibrate everything** in the app (or double-click `calibrate.bat`).
@@ -92,7 +93,8 @@ boss with its bullet rings), with the same reaction delay as in Roblox. Your pla
 - The trained settings are saved in `config.json` (`brain_params`) and **the real bot uses them too**.
 
 ## Overlay (see what the bot sees on your screen)
-Tick **Show overlay on screen** in the app. While the bot runs, it draws right on top of the game:
+Tick **Show overlay on screen** in the app. While the bot runs, it draws right on top of the game at 60 fps
+(between the bot's own updates everything glides along its measured speed):
 cyan circles around everything it detects (with labels), a white circle and **YOU** on your player,
 the aim line, and an arrow for the keys it's holding; a line at the bottom counts what it sees.
 The overlay is click-through and hidden from screen capture, so the bot never sees its own drawings.
@@ -145,6 +147,17 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 | `require_focus` | `true` = only send input while Roblox is the active window. |
 | `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
 | `expand` | Danger size per kind, e.g. `{"boss": 1.5}`: the bot treats it as 1.5x bigger and keeps more distance. Set it in the app under **Danger size of**. |
+
+## Speed
+- Screenshots are taken non-stop on their own thread with Windows' fast **Desktop Duplication** capture
+  (`dxcam`; falls back to `mss`), so the bot always works on the freshest frame. The fps display in the
+  app shows which one is used, e.g. `30 fps (dxcam)`.
+- Detection takes ~26 ms per frame on a 2534x1239 screen (was ~50-75 ms).
+- The bot plans from where you'll be when its keys land, so its reaction delay is accounted for.
+
+## Floating text
+Score popups like **+10 / +25** in red, orange, purple, yellow or gray are ignored: letters are not solid
+shapes and come in a row, unlike mobs and bullets.
 
 ## How it works
 - `vision.py` finds things by color, tells same-colored things apart by size (red square = mob,

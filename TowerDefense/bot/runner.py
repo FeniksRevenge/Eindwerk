@@ -81,7 +81,8 @@ class BotRunner:
         self.last_t = now
 
         frame = self.io.grab()
-        t_grab = self.io.now()
+        # When the screenshot was taken (the capture thread knows exactly), else "now".
+        t_grab = getattr(self.io, "frame_time", 0.0) or self.io.now()
         h, w = frame.shape[:2]
         dets = self.detector.detect(frame)
         found = self._pick_player(dets["player"], now)
@@ -140,7 +141,9 @@ class BotRunner:
         tracks = self.tracker.update(dets, dt, (x, y), max_speed=400 * k, new_bullet_speed=260 * k)
         # Delay between the screenshot and our keys taking effect (processing + roughly one frame).
         keys, aim, fire = self.brain.think((x, y, r), speed, tracks, w, h, latency=min(0.25, self.latency))
-        self.last.update({"keys": keys, "aim": aim, "fire": fire, "speed": speed})
+        self.last.update({"keys": keys, "aim": aim, "fire": fire, "speed": speed, "t": t_grab,
+                          # moving things with their speed, so the overlay can glide between frames
+                          "tracks": [(tr.kind, tr.x, tr.y, tr.r, tr.vx, tr.vy) for tr in tracks]})
 
         if not self.io.focused():
             self.release()

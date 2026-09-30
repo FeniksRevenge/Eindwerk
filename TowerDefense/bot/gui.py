@@ -120,7 +120,7 @@ class App:
         setup2 = tk.Frame(wrap, bg=BG)
         setup2.pack(fill="x", pady=(8, 0))
         ttk.Button(setup2, text="Calibrate everything", command=lambda: self.launch("calibrate")).pack(side="left", padx=(0, 6))
-        ttk.Button(setup2, text="Calibrate from screenshot...", command=self.calibrate_from_file).pack(side="left")
+        ttk.Button(setup2, text="Calibrate from screenshots...", command=self.calibrate_from_file).pack(side="left")
 
         redo = tk.Frame(wrap, bg=BG)
         redo.pack(fill="x", pady=(8, 0))
@@ -407,12 +407,14 @@ class App:
         self.refresh_calibration()
 
     def calibrate_from_file(self):
-        path = filedialog.askopenfilename(
-            title="Pick a screenshot of the play area (not a _bot one)",
+        paths = filedialog.askopenfilenames(
+            title="Pick one or more screenshots of the play area (not _bot ones; Ctrl/Shift-click for several)",
             initialdir=SHOTS_DIR if os.path.isdir(SHOTS_DIR) else os.path.dirname(CONFIG_PATH),
             filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
-        if path:
-            self.launch("calibrate", "--image", path)
+        paths = [p for p in paths if not p.endswith("_bot.png")]
+        if paths:
+            self.launch("calibrate", "--images", *paths)
+            self.write_log(f"Calibrating from {len(paths)} screenshot(s). N = next photo, Esc = finish and save.")
 
     def open_shots(self):
         os.makedirs(SHOTS_DIR, exist_ok=True)
@@ -468,7 +470,8 @@ class App:
             if kind == "status":
                 self.set_status(text)
             elif kind == "fps":
-                self.fps_var.set(f"{text} fps")
+                num, _, extra = text.partition(" ")
+                self.fps_var.set(f"{num} fps {extra}".strip())
             elif kind == "progress":
                 self.photos_var.set(text)
             elif kind == "trained":

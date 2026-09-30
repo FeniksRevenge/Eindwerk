@@ -99,17 +99,85 @@ def roblox_in_front():
     return "roblox" in buf.value.lower()
 
 
+class ScreenGrabber:
+    """Takes screenshots of the play area non-stop on its own thread, so the bot never waits for a
+    capture and always works on the freshest frame. Uses the fast Desktop Duplication API (dxcam)
+    when available, otherwise mss."""
+
+    def __init__(self, region):
+        self.region = region
+        self.frame, self.frame_time, self.seq = None, 0.0, 0
+        self.method = "mss"
+        self.cond = threading.Condition()
+        self.stop = threading.Event()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _open_dxcam(self):
+        try:
+            import dxcam
+            cam = dxcam.create(output_color="BGR")
+            r = self.region
+            box = (r["left"], r["top"], r["left"] + r["width"], r["top"] + r["height"])
+            if cam is not None:
+                return cam, box
+        except Exception:
+            pass
+        return None, None
+
+    def _run(self):
+        cam, box = self._open_dxcam()
+        sct = None if cam else mss.mss()
+        self.method = "dxcam" if cam else "mss"
+        while not self.stop.is_set():
+            t = time.perf_counter()
+            try:
+                if cam:
+                    img = cam.grab(region=box)
+                    if img is None:  # screen hasn't changed since the last grab
+                        time.sleep(0.002)
+                        continue
+                    frame = np.ascontiguousarray(img[:, :, :3])
+                else:
+                    frame = np.ascontiguousarray(np.asarray(sct.grab(self.region))[:, :, :3])
+            except Exception:
+                if cam:  # dxcam trouble (e.g. after a resolution change): fall back to mss
+                    cam, sct, self.method = None, mss.mss(), "mss"
+                    continue
+                time.sleep(0.01)
+                continue
+            with self.cond:
+                self.frame, self.frame_time, self.seq = frame, t, self.seq + 1
+                self.cond.notify_all()
+
+    def latest(self, after_seq):
+        """Waits (up to 0.1 s) for a frame newer than `after_seq`; returns (frame, time, seq)."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq > after_seq, timeout=0.1)
+            return self.frame, self.frame_time, self.seq
+
+    def close(self):
+        self.stop.set()
+
+
 class WindowsIO:
     def __init__(self, region, require_focus=True, fire_with="space"):
         self.region = region  # {"left", "top", "width", "height"} in screen pixels
         self.require_focus = require_focus
         self.fire_with = fire_with  # "space" or "mouse" (left click)
-        self.sct = mss.mss()
+        self.grabber = ScreenGrabber(region)
+        self.seq = 0
+        self.frame_time = 0.0
         self.keys = set()
         self.down = False
 
     def grab(self):
-        return np.ascontiguousarray(np.asarray(self.sct.grab(self.region))[:, :, :3])
+        frame, self.frame_time, self.seq = self.grabber.latest(self.seq)
+        while frame is None:  # very first frame
+            frame, self.frame_time, self.seq = self.grabber.latest(self.seq)
+        return frame
+
+    def close(self):
+        self.grabber.close()
 
     def set_keys(self, keys):
         keys = set(keys)
@@ -243,54 +311,88 @@ def apply_preset():
     return True
 
 
-def calibrate_from_image(path, only):
-    """Calibrate colors from a saved screenshot of the play area (e.g. one taken with /)."""
-    shot = cv2.imread(path)
-    if shot is None:
-        sys.exit(f"Can't open {path}")
+def calibrate_from_images(paths, only):
+    """Calibrate from one or more saved screenshots (e.g. taken with /). Click each thing on as many
+    photos as you like; every thing's color and size is the average of all your clicks."""
     cfg = read_config_or_empty()
-    click_through(cfg, shot, only or CLASSES)
+    samples = {}
+    names = only or CLASSES
+    for i, path in enumerate(paths, 1):
+        shot = cv2.imread(path)
+        if shot is None:
+            print(f"Can't open {path}, skipped")
+            continue
+        header = f"Photo {i}/{len(paths)}" if len(paths) > 1 else ""
+        if click_through(cfg, shot, names, samples=samples, header=header) == "quit":
+            break
+    cv2.destroyAllWindows()
+    if not samples:
+        sys.exit("Nothing clicked, nothing saved.")
+    cfg.setdefault("colors", {})
+    for name, got in samples.items():
+        labs = np.array([g[0] for g in got], dtype=np.float64)
+        radii = sorted(g[1] for g in got)
+        cfg["colors"][name] = {"lab": [int(round(v)) for v in labs.mean(axis=0)],
+                               "radius": round(radii[len(radii) // 2], 1), "n": len(got)}
+        print(f"  {name}: averaged over {len(got)} click(s)")
     cfg["preset"] = False
     save_config(cfg)
 
 
-def click_through(cfg, crop, names):
-    """Shows the play area and asks you to click each thing; stores colors in cfg."""
+def click_through(cfg, crop, names, samples=None, header=""):
+    """Shows the play area and asks you to click each thing. Stores colors in cfg, or, with `samples`
+    (a dict), collects them there to be averaged over several photos.
+    Returns "done", "next" (N: rest of this photo skipped) or "quit" (Esc / window closed)."""
     win = "Swarm bot calibration"
     disp, s = fit_to_screen(crop)
     cfg.setdefault("colors", {})
     clicked = []
     show_on_top(win, disp)
     cv2.setMouseCallback(win, lambda ev, x, y, *_: clicked.append((x, y)) if ev == cv2.EVENT_LBUTTONDOWN else None)
+    multi = samples is not None
     for name in names:
         while True:
             clicked.clear()
-            cv2.imshow(win, banner(disp, f"Click on {CLASS_HELP[name]}.   S = skip (not on screen)   Esc = quit"))
+            extra = "   N = next photo" if multi else ""
+            cv2.imshow(win, banner(disp, f"{header + ': ' if header else ''}Click on {CLASS_HELP[name]}.   "
+                                         f"S = skip{extra}   Esc = {'finish' if multi else 'quit'}"))
             k = -1
-            while not clicked and k not in (ord("s"), 27):
+            while not clicked and k not in (ord("s"), ord("n"), 27):
                 k = cvwin.key(win)
             if k == 27:
+                if multi:
+                    return "quit"
                 sys.exit("Cancelled, nothing saved.")
-            if k == ord("s"):
+            if k == ord("n") and multi:
+                return "next"
+            if k in (ord("s"), ord("n")):
                 print(f"  skipped {name}")
                 break
             cx, cy = int(clicked[0][0] / s), int(clicked[0][1] / s)
             lab, radius = measure_blob(crop, cx, cy)
             if lab is None:
                 cv2.imshow(win, banner(disp, "That's background. Click right on the colored part (the solid middle).  (any key)"))
-                cvwin.key_blocking(win)
+                if cvwin.key_blocking(win) == 27 and cvwin.window_closed(win):
+                    return "quit" if multi else sys.exit("Cancelled, nothing saved.")
                 continue
             preview = disp.copy()
             cv2.circle(preview, (int(cx * s), int(cy * s)), max(3, int(radius * s)), (0, 255, 0), 2)
             cv2.imshow(win, banner(preview, f"{name}: size {radius:.0f}px.   ENTER = ok   R = redo"))
             k = -1
-            while k not in (13, ord("r")):
+            while k not in (13, ord("r"), 27):
                 k = cvwin.key(win)
+            if k == 27:
+                if multi:
+                    return "quit"
+                sys.exit("Cancelled, nothing saved.")
             if k == 13:
-                cfg["colors"][name] = {"lab": lab, "radius": round(radius, 1)}
+                if multi:
+                    samples.setdefault(name, []).append((lab, radius))
+                else:
+                    cfg["colors"][name] = {"lab": lab, "radius": round(radius, 1)}
                 print(f"  {name}: color {lab}, size {radius:.0f}px")
                 break
-    cv2.destroyAllWindows()
+    return "done"
 
 
 def calibrate(only):
@@ -443,6 +545,7 @@ class BotController:
                 if self.running:
                     self.running = False
                     bot.release()
+                    bot.io.close()
                     self.on_event("status", "Stopped")
                     self.on_event("log", "Stopped.")
             if not self.running:
@@ -456,11 +559,13 @@ class BotController:
             except Exception as e:
                 self.running = False
                 bot.release()
+                bot.io.close()
                 self.on_event("status", "Error")
                 self.on_event("log", f"Error, stopped: {e}")
                 continue
             if status == "dead":
                 self.running = False
+                bot.io.close()
                 self.on_event("status", "Stopped (died)")
                 self.on_event("log", f"Player gone for {bot.death_timeout:.0f}s: died after {bot.run_seconds():.0f}s. "
                                      "Stopped. Press * to start again.")
@@ -476,7 +581,8 @@ class BotController:
                 last_status = shown
             frames += 1
             if time.perf_counter() - fps_t > 1:
-                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f}")
+                method = getattr(getattr(bot.io, "grabber", None), "method", "")
+                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f}" + (f" ({method})" if method else ""))
                 frames, fps_t = 0, time.perf_counter()
         if bot is not None:
             bot.release()
@@ -534,8 +640,9 @@ def run():
 
 def main(args):
     try:
-        if args and args[0] == "calibrate" and len(args) > 2 and args[1] == "--image":
-            calibrate_from_image(args[2], args[3:])
+        if args and args[0] == "calibrate" and len(args) > 2 and args[1] in ("--image", "--images"):
+            paths = [a for a in args[2:] if os.path.isfile(a)]
+            calibrate_from_images(paths, [a for a in args[2:] if a in CLASSES])
         elif args and args[0] == "calibrate":
             calibrate(args[1:])
         elif args and args[0] == "train":
