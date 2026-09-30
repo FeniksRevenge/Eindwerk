@@ -73,7 +73,8 @@ class Brain:
 
         if len(bullets["pos"]):
             bp = bullets["pos"][None] + bullets["vel"][None] * T[:, None, None]          # (S, B, 2)
-            gap = np.linalg.norm(P[:, :, :, None, :] - bp[None, None], axis=-1) - pr - bullets["r"]
+            dd = P[:, :, :, None, :] - bp[None, None]
+            gap = np.sqrt(dd[..., 0] ** 2 + dd[..., 1] ** 2) - pr - bullets["r"]
             m = self.BULLET_MARGIN
             near = (m - np.maximum(gap, 0)) ** 2 * 4
             c = np.where(gap < 0, self.BULLET_HIT, np.where(gap < m, near, 0.0))
@@ -82,12 +83,13 @@ class Brain:
         if len(mobs["pos"]):
             mp = mobs["pos"]
             diff = P[:, :, :, None, :] - mp                                                # (N, 9, S, M, 2)
-            md = np.linalg.norm(diff, axis=-1) + 1e-6
+            md = np.sqrt(diff[..., 0] ** 2 + diff[..., 1] ** 2) + 1e-6
             step = np.minimum(md, mobs["speed"][None, None, None, :] * T[None, None, :, None])
             chase = mp + diff / md[..., None] * step[..., None]
             drift = mp[None] + mobs["vel"][None] * T[:, None, None]                        # (S, M, 2)
             pos = np.where(mobs["chaser"][:, None], chase, drift[None, None])
-            gap = np.linalg.norm(P[:, :, :, None, :] - pos, axis=-1) - pr - mobs["r"]
+            dd = P[:, :, :, None, :] - pos
+            gap = np.sqrt(dd[..., 0] ** 2 + dd[..., 1] ** 2) - pr - mobs["r"]
             m = mobs["margin"]
             near = (m - np.maximum(gap, 0)) ** 2 * 1.5
             c = np.where(gap < 0, self.MOB_HIT, np.where(gap < m, near, 0.0))
@@ -170,8 +172,23 @@ class Brain:
         # so plan from where it will be when the new keys land, not from where it is now.
         start = p + self.prev * speed * latency
         start = np.array([min(max(start[0], pr), W - pr), min(max(start[1], pr), H - pr)])
-        c1, end1 = self._leg(start[None], 0.0, STEPS1, speed, W, H, pr, mobs, bullets, latency)
-        c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, mobs, bullets, latency)
+        # Only things that could get within their margin during the 0.8 s look-ahead matter for the
+        # moves (the rest add exactly zero), so leave the far ones out: same decision, much less work.
+        horizon = STEPS1[-1] + STEPS2[-1] + latency
+        reach = speed * (STEPS1[-1] + STEPS2[-1]) + pr
+        near_b, near_m = bullets, mobs
+        if len(bullets["pos"]):
+            d = np.hypot(bullets["pos"][:, 0] - start[0], bullets["pos"][:, 1] - start[1])
+            vb = np.hypot(bullets["vel"][:, 0], bullets["vel"][:, 1])
+            keep = d - reach - vb * horizon - bullets["r"] <= self.BULLET_MARGIN
+            near_b = {k: v[keep] for k, v in bullets.items()}
+        if len(mobs["pos"]):
+            d = np.hypot(mobs["pos"][:, 0] - start[0], mobs["pos"][:, 1] - start[1])
+            vm = np.maximum(mobs["speed"], np.hypot(mobs["vel"][:, 0], mobs["vel"][:, 1]))
+            keep = d - reach - vm * horizon - mobs["r"] <= mobs["margin"]
+            near_m = {k: v[keep] for k, v in mobs.items()}
+        c1, end1 = self._leg(start[None], 0.0, STEPS1, speed, W, H, pr, near_m, near_b, latency)
+        c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, near_m, near_b, latency)
         follow = (c2 * 0.7 + self._spot(end2, W, H, mobs)).min(axis=1)
         total = c1[0] + follow
         total += (1 - DIRS @ pref) * pull

@@ -87,8 +87,9 @@ boss with its bullet rings), with the same reaction delay as in Roblox. Your pla
   it gives **+2 HP**. It gets harder over time (an extra enemy every 15 s), like real waves.
 - **1x / 2x / 5x / 10x / 100x** speed, **Pause**, **Restart**, and a scenario list (Mixed, Many shooters, Boss, Swarm).
   At 100x it runs as fast as your PC can; the info line shows the real speed (e.g. `running at 40x`).
-- **Keep training while it plays** (on by default): training runs nonstop in the background, on your other
-  CPU cores, while you watch. Each round plays 4 test fights with the current dodge settings and with a
+- **Keep training while it plays** (on by default): training runs nonstop in the background while you
+  watch, on at most half your CPU cores (max 4) and at low priority, so the game and the real bot always
+  come first. Each round plays 4 test fights with the current dodge settings and with a
   bunch of small changes (more changes on PCs with more cores), all at once at full speed, and keeps the
   best change if it survives more than 3% longer. Better settings are used **right away**, also by the fight
   you're watching. When the player reaches **0/10** it just plays again. **Reset training** goes back to
@@ -166,12 +167,24 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 - Screenshots are taken non-stop on their own thread with Windows' fast **Desktop Duplication** capture
   (`dxcam`; falls back to `mss`), so the bot always works on the freshest frame. The fps display in the
   app shows which one is used, e.g. `30 fps (dxcam)`.
-- Detection takes ~26 ms per frame on a 2534x1239 screen (was ~50-75 ms).
+- Detection takes ~9 ms per frame on a 2534x1239 screen (was ~22 ms, and ~50-75 ms before that): one quick
+  pass finds where there is anything at all (the game is black), and only those spots are looked at, with a
+  color table built once instead of checking every color over the whole screen.
+- Screenshots are only taken when the bot is ready for the next one (not non-stop), so capturing doesn't
+  keep a CPU core busy.
+- The brain leaves out bullets and mobs that can't reach you within its 0.8 s look-ahead (exactly the same
+  decisions, about 30% less work).
 - The bot plans from where you'll be when its keys land, so its reaction delay is accounted for.
 
 ## Floating text
-Score popups like **+10 / +25** in red, orange, purple, yellow or gray are ignored: letters are not solid
-shapes and come in a row, unlike mobs and bullets.
+Score popups like **+10 / +25** in red, orange, purple, yellow or gray are ignored: a row of bullet-sized
+pieces where at least one isn't a round ball (a "1", a "+", a "2") is text. A lone "+" is too thin to be a
+bullet. Rows of real things are kept: bullets are round, and the **3 tiny tanks** a dead tank splits into
+are bigger than bullets.
+
+## Your player's look
+The bot knows both looks of your player: the **gray ball** (with its white shield) and the **white UFO**
+(a white ball on an oval with black windows). No recalibration needed when you switch.
 
 ## How it works
 - `vision.py` finds things by color, tells same-colored things apart by size (red square = mob,

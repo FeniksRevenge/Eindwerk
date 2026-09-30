@@ -8,8 +8,8 @@ Brain and Tracker it uses in Roblox, including its reaction delay.
 - 10 HP; every hit costs 1. Killed mobs sometimes drop a green circle: walk over it for +2 HP.
 - Purple tanks split into 3 tiny fast mobs when they die.
 - It gets harder over time (an extra enemy every 15 s), like real waves.
-- It keeps training while you watch: worker processes on the other CPU cores play test fights at
-  full speed with small changes to the dodge settings and keep a change only if it survives longer.
+- It keeps training while you watch: worker processes (at most half the CPU cores, low priority,
+  so the game and the real bot come first) play test fights at full speed with small changes to the dodge settings and keep a change only if it survives longer.
   Better settings are used right away (also in the fight you're watching), saved, and used by the
   real bot too. When the player reaches 0/10 HP it simply plays again.
 
@@ -290,13 +290,26 @@ def selftest_worker(x):
     return run_episode("Mixed", x, default_params(), cap=2.0) > 0
 
 
+def _low_priority():
+    """Training workers run at low priority, so the game and the real bot always come first."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x4000)  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            os.nice(10)
+    except Exception:
+        pass
+
+
 def make_pool():
-    """Worker processes for training on the other CPU cores (training runs in parallel with the
-    fight you watch). Returns (pool or None, number of workers)."""
-    workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    """Worker processes for training in parallel with the fight you watch: at most half the CPU
+    cores (max 4), at low priority. Returns (pool or None, number of workers)."""
+    workers = max(1, min(4, (os.cpu_count() or 2) // 2))
     try:
         import multiprocessing as mp
-        return mp.get_context("spawn").Pool(workers), workers
+        return mp.get_context("spawn").Pool(workers, initializer=_low_priority), workers
     except Exception:
         return None, 1
 
@@ -519,8 +532,8 @@ class SimWindow:
                 step = min(SIM_DT, todo)
                 self.sim.step(step)
                 todo -= step
-        # Fast speeds redraw less often so more time goes into playing.
-        if now - self.last_draw >= (0.1 if self.speed >= 10 else 0.0):
+        # Redraw at most 30x a second (10x at fast speeds): drawing costs more than playing.
+        if now - self.last_draw >= (0.1 if self.speed >= 10 else 1 / 30):
             self.last_draw = now
             try:
                 self.draw()

@@ -112,6 +112,7 @@ class ScreenGrabber:
         self.note = ""  # why it uses what it uses, for the log
         self.cond = threading.Condition()
         self.stop = threading.Event()
+        self.taken = threading.Event()  # the bot took the latest frame: time to grab the next one
         threading.Thread(target=self._run, daemon=True).start()
 
     def _open_dxcam(self):
@@ -196,15 +197,22 @@ class ScreenGrabber:
             with self.cond:
                 self.frame, self.frame_time, self.seq = frame, t, self.seq + 1
                 self.cond.notify_all()
+            # Lightweight: grab the next frame once the bot took this one (so one is always ready),
+            # instead of grabbing non-stop; refresh anyway if it waits long.
+            self.taken.wait(0.03)
+            self.taken.clear()
 
     def latest(self, after_seq):
         """Waits (up to 0.1 s) for a frame newer than `after_seq`; returns (frame, time, seq)."""
         with self.cond:
             self.cond.wait_for(lambda: self.seq > after_seq, timeout=0.1)
-            return self.frame, self.frame_time, self.seq
+            out = self.frame, self.frame_time, self.seq
+        self.taken.set()
+        return out
 
     def close(self):
         self.stop.set()
+        self.taken.set()
 
 
 class WindowsIO:

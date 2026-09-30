@@ -17,7 +17,7 @@ CLASSES = ["player", "enemy_bullet", "shooter_bullet", "yellow_bullet", "grunt",
 BULLET_CLASSES = ("enemy_bullet", "shooter_bullet", "yellow_bullet")
 MOB_KINDS = ["grunt", "runner", "shooter", "tank", "tank_mini", "boss"]
 CLASS_HELP = {
-    "player": "YOU (the gray ball)",
+    "player": "YOU (the gray ball or the white UFO)",
     "enemy_bullet": "a RED bullet (the boss's red balls)",
     "shooter_bullet": "an ORANGE bullet (from the orange shooter)",
     "grunt": "the RED square (basic mob)",
@@ -100,7 +100,7 @@ MIN_SOLIDITY = 0.75
 
 
 def text_rows(boxes):
-    """Indexes of boxes that look like letters/digits of one line of text: 2+ pieces of similar
+    """Rows (lists of indexes) of boxes that look like letters/digits of one line of text: 2+ pieces of similar
     height, tops lined up, side by side with small gaps (e.g. the "1" and "0" of a "+10" popup)."""
     n = len(boxes)
     parent = list(range(n))
@@ -124,7 +124,7 @@ def text_rows(boxes):
     groups = {}
     for i in range(n):
         groups.setdefault(find(i), []).append(i)
-    return {i for g in groups.values() if len(g) >= 2 for i in g}
+    return [g for g in groups.values() if len(g) >= 2]
 
 
 def find_rings_near(bgr, lab, balls, ball_r):
@@ -200,8 +200,39 @@ def measure_blob(bgr_img, x, y, tol=DEFAULT_TOLERANCE):
     return lab, radius
 
 
+# The player's looks: the gray ball (with a white shield), and the white "UFO" (a ball on an oval with
+# black windows). The white look is matched on its own, so the gray ball's white shield doesn't merge
+# into the ball.
+PLAYER_GRAY = [172, 128, 123]
+PLAYER_WHITE = [251, 128, 128]
+FG_LEVEL = 45     # a pixel brighter than this in any channel is "something"; the background is ~(8, 5, 4)
+SHADE_TOL = [16, 9, 9]
+_BIN_LAB = None   # Lab color of every 64x64x64 BGR bin (built once)
+
+
+def _bin_lab():
+    global _BIN_LAB
+    if _BIN_LAB is None:
+        v = (np.arange(64, dtype=np.int32) << 2) + 2
+        b, g, r = np.meshgrid(v, v, v, indexing="ij")
+        bgr = np.stack([b, g, r], -1).astype(np.uint8).reshape(512, 512, 3)
+        _BIN_LAB = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.int16)
+    return _BIN_LAB
+
+
+def _roundish(blob):
+    """A ball: about as wide as high, fills its box like a circle does, and solid."""
+    bw, bh = blob[5][2], blob[5][3]
+    return max(bw, bh) <= 1.2 * min(bw, bh) and blob[6] >= 0.6 and blob[4] >= MIN_SOLIDITY
+
+
 class Detector:
     """Finds things by color, then by size.
+
+    Lightweight: one quick pass over the (half-size) screen finds the spots where there is anything
+    at all (the game is black), then only those small spots are looked at. Colors are looked up in a
+    table built once (every possible color -> which kind of thing it belongs to), so a spot costs
+    a few microseconds no matter how many kinds there are.
 
     In the Roblox game the basic mob, the boss and the boss's bullets are all the same red,
     so when several classes share a color each blob goes to the class whose normal size
@@ -213,14 +244,6 @@ class Detector:
         self.tol = cfg.get("tolerance", DEFAULT_TOLERANCE)
         self.tol_arr = np.array(self.tol)
         self.ignore = cfg.get("ignore", [])  # things marked "not a thing" in the photo trainer
-        player = (cfg.get("colors", {}).get("player") or {}).get("lab")
-        self.player_shades = shaded_player_colors(player) if player else []
-        # Backup for finding the player, only used when nothing else was: the preset gray, in case
-        # the calibrated/trained player color drifted (a wrong click in the photo trainer) or another
-        # kind was trained to a gray so close that it took over the player's blobs.
-        pr = float((cfg.get("colors", {}).get("player") or {}).get("radius", 0) or 0)
-        preset = PRESET["colors"]["player"]["lab"]
-        self.backup_player = (preset, pr) if pr > 0 else None
         # "Danger size": treat some kinds as bigger than they look so the bot keeps more distance.
         self.expand = {k: float(v) for k, v in cfg.get("expand", {}).items()}
         # Group classes whose colors are practically the same (calibration clicks on the same red
@@ -238,29 +261,47 @@ class Detector:
                     break
             else:
                 self.groups.append(([c["lab"]], [(name, float(c["radius"]))]))
+        # Color table entries: (lab, tolerance, group id). Group ids start at 1 (0 = nothing).
+        entries = []
+        self.shade_gid = self.white_gid = None
+        extra = len(self.groups)
+        for gid, (labs, members) in enumerate(self.groups, 1):
+            for lab in labs:
+                entries.append((lab, self.tol, gid))
+            if any(m[0] == "player" for m in members):
+                looks = [PLAYER_GRAY] if not any(np.all(np.abs(np.array(PLAYER_GRAY) - np.array(o)) <= 4) for o in labs) else []
+                entries += [(lab, self.tol, gid) for lab in looks]
+                extra += 1
+                self.white_gid = extra
+                entries.append((PLAYER_WHITE, [12, 6, 6], self.white_gid))
+                if len(members) == 1:
+                    # The player behind the see-through health bar / score panel: its own group, only
+                    # used when the player isn't found normally.
+                    extra += 1
+                    self.shade_gid = extra
+                    for base in list(labs) + looks + [PLAYER_WHITE]:
+                        entries += [(sh, SHADE_TOL, self.shade_gid) for sh in shaded_player_colors(base)]
+        self.lut = self._build_lut(entries)
+        self.player_gid = next((gid for gid, (_l, mem) in enumerate(self.groups, 1) if any(m[0] == "player" for m in mem)), None)
+        pr = next((m[1] for _l, mem in self.groups for m in mem if m[0] == "player"), 0.0)
+        self.player_min_side = 2 * 0.65 * pr  # full-size pixels
+        # Floating text letters are at most about bullet-sized.
+        bullet_r = [m[1] for _l, mem in self.groups for m in mem if m[0] in BULLET_CLASSES]
+        self.text_max_r = 1.5 * (min(bullet_r) if bullet_r else 14.0)
+        self.min_r = min((m[1] for _, members in self.groups for m in members), default=5.0)
 
-    def blobs(self, lab_img, labs, min_fill=0.3, tol=None, min_r=0.0):
-        """(x, y, radius, mean_lab) of every roughly solid blob of these colors, in downscaled pixels."""
-        tol = self.tol if tol is None else tol
-        mask = color_mask(lab_img, labs[0], tol)
-        for lab in labs[1:]:
-            mask |= color_mask(lab_img, lab, tol)
-        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        out = []
-        big = np.nonzero(np.maximum(stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT]) >= 2 * min_r)[0] + 1
-        for i in big:  # tiny specks are skipped before any per-blob work
-            bx, by = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
-            bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
-            area = stats[i, cv2.CC_STAT_AREA]
-            # Skip thin lines (the aim line) and text-like shapes: real things fill their box.
-            if max(bw, bh) > 3 * max(1, min(bw, bh)) or area < min_fill * bw * bh:
-                continue
-            if max(bw, bh) > 0.35 * min(lab_img.shape[:2]):
-                continue  # screen-sized: a color that matches the background, not a mob
-            sel = labels[by:by + bh, bx:bx + bw] == i
-            mean_lab = lab_img[by:by + bh, bx:bx + bw][sel].mean(axis=0)
-            out.append((cents[i][0], cents[i][1], max(bw, bh) / 2.0, mean_lab, solidity(sel, area), (bx, by, bw, bh)))
-        return out
+    @staticmethod
+    def _build_lut(entries):
+        """Every possible color (64 levels per channel) -> the closest matching group id, or 0."""
+        bins = _bin_lab()
+        best = np.full(len(bins), np.inf, np.float32)
+        lut = np.zeros(len(bins), np.uint8)
+        for lab, tol, gid in entries:
+            d = (np.abs(bins - np.array(lab, np.int16)) / np.array(tol, np.float32)).max(axis=1)
+            take = (d <= 1.0) & (d < best)
+            best[take] = d[take]
+            lut[take] = gid
+        return lut
 
     def _ignored(self, lab, r):
         """True if this looks like something you marked as 'not a thing' in the photo trainer."""
@@ -269,53 +310,125 @@ class Detector:
                 return True
         return False
 
+    def _blobs(self, bgr):
+        """{group id: [(x, y, r, mean_lab, solidity, box), ...]} in downscaled pixels."""
+        s = self.scale
+        small = cv2.resize(bgr, (bgr.shape[1] // s, bgr.shape[0] // s), interpolation=cv2.INTER_NEAREST) if s > 1 else bgr
+        b, g, r = cv2.split(small)
+        _, fg = cv2.threshold(cv2.max(cv2.max(b, g), r), FG_LEVEL, 1, cv2.THRESH_BINARY)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+        H, W = fg.shape
+        wide = np.maximum(stats[:, 2], stats[:, 3])
+        min_side = max(2, int(self.min_r * 0.9 / s))
+        # (No upper limit here: the aim line can connect you to half the screen.)
+        spots = np.nonzero(wide >= min_side)[0]
+        too_big = 0.35 * min(H, W)
+        # Small spots can only be bullets or health pickups; most small spots are letters of the chat
+        # and HUD text. Look at the middle pixel first and skip them when it's nothing or player-gray.
+        player_ish = {self.player_gid, self.white_gid, self.shade_gid} - {None}
+        player_min = self.player_min_side / s
+        lut = self.lut
+        out = {}
+        for i in spots:
+            if i == 0:
+                continue
+            x0, y0, w, h = (int(v) for v in stats[i, :4])
+            if max(w, h) < player_min:
+                c = small[y0 + h // 2, x0 + w // 2]
+                mid = lut[((int(c[0]) >> 2) << 12) | ((int(c[1]) >> 2) << 6) | (int(c[2]) >> 2)]
+                if mid == 0 or mid in player_ish:
+                    continue
+            crop = small[y0:y0 + h, x0:x0 + w].astype(np.int32)
+            grp = self.lut[((crop[..., 0] >> 2) << 12) | ((crop[..., 1] >> 2) << 6) | (crop[..., 2] >> 2)]
+            grp[labels[y0:y0 + h, x0:x0 + w] != i] = 0  # only this spot (neighbors are their own spots)
+            present = np.unique(grp)
+            if present[-1] == 0:
+                continue
+            lab_crop = None
+            for gid in present:
+                if gid == 0:
+                    continue
+                mask = (grp == gid).astype(np.uint8)
+                m, cl, cs, cc = cv2.connectedComponentsWithStats(mask, connectivity=8)
+                for j in range(1, m):
+                    bx, by, bw, bh, area = (int(v) for v in cs[j])
+                    if max(bw, bh) < min_side or max(bw, bh) > too_big:
+                        continue  # a speck, or screen-sized: a color that matches the background
+                    # Skip thin lines (the aim line) and text-like shapes: real things fill their box.
+                    fill = 0.08 if gid in self.hollow_ok else 0.3
+                    if max(bw, bh) > 3 * max(1, min(bw, bh)) or area < fill * bw * bh:
+                        continue
+                    sel = cl[by:by + bh, bx:bx + bw] == j
+                    if lab_crop is None:
+                        lab_crop = cv2.cvtColor(small[y0:y0 + h, x0:x0 + w], cv2.COLOR_BGR2LAB)
+                    mean_lab = lab_crop[by:by + bh, bx:bx + bw][sel].mean(axis=0)
+                    rr = max(bw, bh) / 2.0
+                    solid = solidity(sel, area) if rr * s <= 60 else 1.0
+                    out.setdefault(int(gid), []).append((x0 + cc[j][0], y0 + cc[j][1], rr, mean_lab, solid,
+                                                         (x0 + bx, y0 + by, bw, bh), area / float(bw * bh)))
+        return out
+
+    @property
+    def hollow_ok(self):
+        # Health pickups may be drawn as a ring, so allow hollow shapes for them.
+        if not hasattr(self, "_hollow"):
+            self._hollow = {gid for gid, (_l, members) in enumerate(self.groups, 1)
+                            if any(m[0] == "health" for m in members)}
+        return self._hollow
+
     def detect_detailed(self, bgr, keep_ignored=False):
         """Every detection as a dict: name (what the bot treats it as), cls (the calibrated class),
         x, y, r (full-size pixels) and lab (its average color). With keep_ignored, things on the
         ignore list are included too, marked "ignored": True (the photo trainer shows them)."""
         s = self.scale
-        small = cv2.resize(bgr, (bgr.shape[1] // s, bgr.shape[0] // s), interpolation=cv2.INTER_NEAREST) if s > 1 else bgr
-        lab_img = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
+        all_blobs = self._blobs(bgr)
         found = []
-        for labs, members in self.groups:
-            # Health pickups may be drawn as a ring, so allow hollow shapes for them.
-            min_fill = 0.08 if any(m[0] == "health" for m in members) else 0.3
+        for gid, (labs, members) in enumerate(self.groups, 1):
+            blobs = all_blobs.get(gid, [])
             smallest = min(m[1] for m in members)
             names = {m[0] for m in members}
+            player_r = dict(members).get("player")
+            if player_r:
+                # The white look (solid enough: the gray ball's thin white shield doesn't count).
+                blobs = blobs + [b for b in all_blobs.get(self.white_gid, []) if b[4] >= 0.7]
+                if self.shade_gid and all_blobs.get(self.shade_gid) and not any(
+                        0.65 * player_r <= b[2] * s <= 1.6 * player_r for b in blobs):
+                    # the player behind a HUD panel (too dark = the boss's dark middle or a HUD box)
+                    blobs = blobs + [b for b in all_blobs[self.shade_gid] if b[3][0] >= 60]
+            if not blobs:
+                continue
             # Orange shooters are a ball inside a ring; orange bullets are the same ball without one.
-            blobs = self.blobs(lab_img, labs, min_fill, min_r=smallest * 0.45 / s)
             rings = None
             if "shooter" in names:
                 balls = [(b[0] * s + s / 2, b[1] * s + s / 2) for b in blobs if b[2] * s < smallest * 2.5]
                 rings = find_rings_near(bgr, labs[0], balls, smallest)
-            player_r = dict(members).get("player")
-            plain_player = player_r and any(0.65 * player_r <= b[2] * s <= 1.6 * player_r and b[4] >= MIN_SOLIDITY
-                                            for b in blobs)
-            if len(members) == 1 and members[0][0] == "player" and not plain_player:
-                # Also look for the player behind the see-through health bar / score panel. Each shade
-                # is checked on its own, so the (equally darkened) white shield doesn't merge with it.
-                for shade in self.player_shades:
-                    for b in self.blobs(lab_img, [shade], min_fill, tol=[16, 9, 9], min_r=smallest * 0.6 / s):
-                        if b[3][0] < 60:
-                            continue  # too dark: the boss's dark middle, not a shaded player
-                        if not any(abs(b[0] - o[0]) < 4 and abs(b[1] - o[1]) < 4 for o in blobs):
-                            blobs.append(b)
             used_rings = set()
-            # Floating text ("+10", "+25"...) in a mob's color: drop whole lines of letters.
-            text = text_rows([b[5] for b in blobs])
-            blobs = [b for i, b in enumerate(blobs) if i not in text or b[2] * s > 60]
-            for (x, y, r, lab, solid, _box) in blobs:
+            # Floating text ("+10", "+25"...) in a mob's color: a row of bullet-sized pieces where at
+            # least one isn't a round ball (a "1", a "+", a "2"...). Rows of bullets and the 3 tiny tanks
+            # of a dead tank (bigger than bullets) are kept.
+            rows = text_rows([bl[5] for bl in blobs])
+            if rows:
+                text = set()
+                for row in rows:
+                    pieces = [k for k in row if blobs[k][2] * s <= self.text_max_r]
+                    if len(pieces) >= 2 and not all(_roundish(blobs[k]) for k in pieces):
+                        text.update(pieces)
+                blobs = [bl for k, bl in enumerate(blobs) if k not in text]
+            for (x, y, r, lab, solid, box, fill) in blobs:
                 x, y, r = x * s + s / 2, y * s + s / 2, r * s
                 # Pick the class with the closest normal size (compared as a ratio).
                 cls, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
-                smallest = min(m[1] for m in members)
                 if r < smallest * 0.45:
                     continue  # specks and explosion particles
                 if (cls in BULLET_CLASSES or cls == "player") and r > r_exp * 2:
                     continue
                 if cls == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
                     continue  # HUD text is gray too, but much smaller than the player
-                if cls in SOLID_KINDS and solid < MIN_SOLIDITY and r <= 35:
+                if cls in BULLET_CLASSES and fill < 0.45:
+                    continue  # bullets are balls; a lone "+" of a score popup fills only a third of its box
+                if cls == "player" and max(box[2], box[3]) > 1.4 * min(box[2], box[3]):
+                    continue  # the player is round; HUD boxes (like the "P" key) are not
+                if cls in SOLID_KINDS and cls != "player" and solid < MIN_SOLIDITY and r <= 35:
                     continue  # floating text ("+10" etc.) in a mob's color: not solid like the real thing
                               # (only small things: a big mob can look dented when another overlaps it)
                 if rings is not None and cls in ("shooter", "shooter_bullet"):
@@ -337,21 +450,8 @@ class Detector:
             for g in rings or []:
                 if g not in used_rings and g[2] >= 2.2 * smallest:
                     found.append({"name": "shooter", "cls": "shooter", "x": g[0], "y": g[1], "r": g[2],
-                                  "lab": [float(v) for v in labs[0]]})
-        if self.backup_player and not any(d["cls"] == "player" for d in found):
-            found += self._backup_player(lab_img)
+                                  "lab": [float(v) for v in labs[0]], "ignored": False})
         return found
-
-    def _backup_player(self, lab_img):
-        s = self.scale
-        lab_p, r_exp = self.backup_player
-        out = []
-        for (x, y, r, lab, solid, _box) in self.blobs(lab_img, [lab_p], min_r=r_exp * 0.6 / s):
-            x, y, r = x * s + s / 2, y * s + s / 2, r * s
-            if 0.65 * r_exp <= r <= 1.6 * r_exp and solid >= MIN_SOLIDITY:
-                out.append({"name": "player", "cls": "player", "x": x, "y": y, "r": r,
-                            "lab": [float(v) for v in lab], "ignored": False})
-        return out
 
     def detect(self, bgr):
         """Returns {class name: [(x, y, radius), ...]} in full-size pixel coordinates."""
