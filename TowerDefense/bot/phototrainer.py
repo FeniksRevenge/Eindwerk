@@ -25,7 +25,7 @@ import cv2
 import cvwin
 import numpy as np
 
-from vision import CLASS_HELP, CLASSES, DRAW_COLORS, Detector, measure_blob
+from vision import CLASS_HELP, CLASSES, DRAW_COLORS, PLAYER_WHITE, Detector, measure_blob, remember_player_look
 
 KEYS = "abcdefghijk"  # menu keys, one per class in CLASSES order
 MAX_WEIGHT = 30       # new examples always keep at least ~3% influence, so it keeps adapting
@@ -52,18 +52,34 @@ def unignore(cfg, lab, radius):
                              and 0.75 <= float(radius) / ig["radius"] <= 1.33)]
 
 
+def _blend(c, lab, radius):
+    n = min(int(c.get("n", 5)), MAX_WEIGHT)
+    c["lab"] = [int(round((old * n + new) / (n + 1))) for old, new in zip(c["lab"], lab)]
+    c["radius"] = round((float(c["radius"]) * n + float(radius)) / (n + 1), 1)
+    c["n"] = n + 1
+
+
 def learn(cfg, cls, lab, radius):
     """Blend one confirmed example into what the bot knows about this kind of thing."""
     unignore(cfg, lab, radius)
     colors = cfg.setdefault("colors", {})
     c = colors.get(cls)
+    if cls == "player" and c and c.get("lab"):
+        # The player has several looks (gray ball, white UFO...): never average two looks together.
+        half = np.array(cfg.get("tolerance", [30, 14, 14])) * 0.5
+        if not np.all(np.abs(np.array(c["lab"]) - np.array(lab)) <= half):
+            for look in cfg.get("player_looks", []):
+                if np.all(np.abs(np.array(look["lab"]) - np.array(lab)) <= half):
+                    _blend(look, lab, radius)
+                    return
+            if np.all(np.abs(np.array(PLAYER_WHITE) - np.array(lab)) <= [12, 6, 6]):
+                return  # the white UFO: already known
+            remember_player_look(cfg, {"lab": lab, "radius": radius})
+            return
     if not c or not c.get("lab"):
         colors[cls] = {"lab": [int(round(v)) for v in lab], "radius": round(float(radius), 1), "n": 1}
         return
-    n = min(int(c.get("n", 5)), MAX_WEIGHT)
-    c["lab"] = [int(round((old * n + new) / (n + 1))) for old, new in zip(c["lab"], lab)]
-    c["radius"] = round((float(c["radius"]) * n + float(radius)) / (n + 1), 1)
-    c["n"] = n + 1
+    _blend(c, lab, radius)
 
 
 def forget(cfg, lab, radius):

@@ -25,7 +25,7 @@ import numpy as np
 
 from phototrainer import list_photos, train_semi
 from runner import BotRunner
-from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, measure_blob
+from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, measure_blob, set_main_player
 
 # When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
 FROZEN = getattr(sys, "frozen", False)
@@ -388,8 +388,12 @@ def calibrate_from_images(paths, only):
     for name, got in samples.items():
         labs = np.array([g[0] for g in got], dtype=np.float64)
         radii = sorted(g[1] for g in got)
-        cfg["colors"][name] = {"lab": [int(round(v)) for v in labs.mean(axis=0)],
-                               "radius": round(radii[len(radii) // 2], 1), "n": len(got)}
+        lab, radius = [int(round(v)) for v in labs.mean(axis=0)], round(radii[len(radii) // 2], 1)
+        if name == "player":
+            set_main_player(cfg, lab, radius)  # the previous look is kept too
+            cfg["colors"]["player"]["n"] = len(got)
+        else:
+            cfg["colors"][name] = {"lab": lab, "radius": radius, "n": len(got)}
         print(f"  {name}: averaged over {len(got)} click(s)")
     cfg["preset"] = False
     save_config(cfg)
@@ -444,6 +448,8 @@ def click_through(cfg, crop, names, samples=None, header=""):
             if k == 13:
                 if multi:
                     samples.setdefault(name, []).append((lab, radius))
+                elif name == "player":
+                    set_main_player(cfg, lab, radius)  # the previous look is kept too
                 else:
                     cfg["colors"][name] = {"lab": lab, "radius": round(radius, 1)}
                 print(f"  {name}: color {lab}, size {radius:.0f}px")

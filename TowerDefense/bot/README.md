@@ -182,9 +182,20 @@ pieces where at least one isn't a round ball (a "1", a "+", a "2") is text. A lo
 bullet. Rows of real things are kept: bullets are round, and the **3 tiny tanks** a dead tank splits into
 are bigger than bullets.
 
+## Relearn the player / what it knows
+- **Relearn the player** (main window): press Enter in the calibration window, switch to Roblox, and click on
+  yourself in the screenshot. Do this whenever your look changes. The **old look is kept**, so both keep
+  working (and the photo trainer never mixes two looks into one).
+- **What it knows...** lists everything the bot recognizes: the player and all its looks, every bullet and
+  mob, the health circle, with their color, size, where it was learned (preset, calibration, number of
+  photo-trainer examples), danger size, and the **ignore list**. Select a row to:
+  **Relearn** it (screenshot now, or from saved screenshots), **Reset to preset**, **Make main look** (for a
+  player look), or **Remove** it (a player look, an ignore entry, or a thing).
+
 ## Your player's look
 The bot knows both looks of your player: the **gray ball** (with its white shield) and the **white UFO**
-(a white ball on an oval with black windows). No recalibration needed when you switch.
+(a white ball on an oval with black windows), at any angle: tilted while moving or level while standing
+still. No recalibration needed when you switch.
 
 ## How it works
 - `vision.py` finds things by color, tells same-colored things apart by size (red square = mob,

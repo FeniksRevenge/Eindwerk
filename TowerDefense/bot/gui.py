@@ -122,6 +122,11 @@ class App:
         ttk.Button(setup2, text="Calibrate everything", command=lambda: self.launch("calibrate")).pack(side="left", padx=(0, 6))
         ttk.Button(setup2, text="Calibrate from screenshots...", command=self.calibrate_from_file).pack(side="left")
 
+        know = tk.Frame(wrap, bg=BG)
+        know.pack(fill="x", pady=(8, 0))
+        ttk.Button(know, text="Relearn the player", command=self.relearn_player).pack(side="left", padx=(0, 6))
+        ttk.Button(know, text="What it knows...", command=self.open_knowledge).pack(side="left")
+
         redo = tk.Frame(wrap, bg=BG)
         redo.pack(fill="x", pady=(8, 0))
         tk.Label(redo, text="Redo one:", bg=BG, fg=MUTED, font=FONT).pack(side="left")
@@ -357,6 +362,15 @@ class App:
         SimWindow(self.root, load_params=load, save_params=save)
         self.write_log("Simulator opened: the bot's real brain playing a practice arena (1x-100x), training in the background.")
 
+    def relearn_player(self):
+        self.launch("calibrate", "player")
+        self.write_log("Relearn the player: press Enter in the calibration window, switch to Roblox (playing), "
+                       "then click on yourself. Your old look is kept too, so both keep working.")
+
+    def open_knowledge(self):
+        from knowledge import KnowledgeWindow
+        KnowledgeWindow(self.root, self.launch, self.write_log)
+
     def clear_ignore(self):
         with CONFIG_LOCK:
             cfg = read_config_or_empty()
@@ -516,6 +530,7 @@ def selftest():
     found = Detector(cfg).detect(img)
     if not (len(found["player"]) == 1 and len(found["enemy_bullet"]) == 1):
         return False
+    import knowledge  # noqa: F401  (the "What it knows" window is bundled)
     # the simulator's training runs on worker processes: check they start inside the exe too
     import simulator
     pool, _n = simulator.make_pool()

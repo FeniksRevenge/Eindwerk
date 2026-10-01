@@ -210,6 +210,32 @@ SHADE_TOL = [16, 9, 9]
 _BIN_LAB = None   # Lab color of every 64x64x64 BGR bin (built once)
 
 
+def _close(a, b, tol):
+    return all(abs(float(x) - float(y)) <= t for x, y, t in zip(a, b, tol))
+
+
+def remember_player_look(cfg, look):
+    """Keep `look` ({"lab", "radius"}) as an extra look of the player (no duplicates, at most 6)."""
+    half = [t * 0.5 for t in cfg.get("tolerance", DEFAULT_TOLERANCE)]
+    looks = cfg.setdefault("player_looks", [])
+    if any(_close(lk["lab"], look["lab"], half) for lk in looks):
+        return
+    looks.append({"lab": [int(round(v)) for v in look["lab"]], "radius": round(float(look["radius"]), 1)})
+    del looks[:-6]
+
+
+def set_main_player(cfg, lab, radius):
+    """Relearn the player: this is what it looks like now. The previous look is kept as an extra look,
+    so both keep working (e.g. the gray ball and a skin)."""
+    half = [t * 0.5 for t in cfg.get("tolerance", DEFAULT_TOLERANCE)]
+    colors = cfg.setdefault("colors", {})
+    old = colors.get("player")
+    if old and old.get("lab") and old.get("radius") and not _close(old["lab"], lab, half):
+        remember_player_look(cfg, old)
+    cfg["player_looks"] = [lk for lk in cfg.get("player_looks", []) if not _close(lk["lab"], lab, half)]
+    colors["player"] = {"lab": [int(round(v)) for v in lab], "radius": round(float(radius), 1)}
+
+
 def _bin_lab():
     global _BIN_LAB
     if _BIN_LAB is None:
@@ -262,6 +288,8 @@ class Detector:
             else:
                 self.groups.append(([c["lab"]], [(name, float(c["radius"]))]))
         # Color table entries: (lab, tolerance, group id). Group ids start at 1 (0 = nothing).
+        # Extra looks of the player you taught it ("Relearn the player" keeps the old look here).
+        self.player_looks = [lk for lk in cfg.get("player_looks", []) if lk.get("lab") and lk.get("radius")]
         entries = []
         self.shade_gid = self.white_gid = None
         extra = len(self.groups)
@@ -272,19 +300,24 @@ class Detector:
                 looks = [PLAYER_GRAY] if not any(np.all(np.abs(np.array(PLAYER_GRAY) - np.array(o)) <= 4) for o in labs) else []
                 entries += [(lab, self.tol, gid) for lab in looks]
                 extra += 1
-                self.white_gid = extra
+                self.white_gid = extra  # the other looks: the white UFO and any you taught it
                 entries.append((PLAYER_WHITE, [12, 6, 6], self.white_gid))
+                other_looks = [lk["lab"] for lk in self.player_looks
+                               if not any(np.all(np.abs(np.array(lk["lab"]) - np.array(o)) <= 4) for o in labs)]
+                entries += [(lab, self.tol, self.white_gid) for lab in other_looks]
                 if len(members) == 1:
                     # The player behind the see-through health bar / score panel: its own group, only
                     # used when the player isn't found normally.
                     extra += 1
                     self.shade_gid = extra
-                    for base in list(labs) + looks + [PLAYER_WHITE]:
+                    for base in list(labs) + looks + [PLAYER_WHITE] + other_looks:
                         entries += [(sh, SHADE_TOL, self.shade_gid) for sh in shaded_player_colors(base)]
         self.lut = self._build_lut(entries)
         self.player_gid = next((gid for gid, (_l, mem) in enumerate(self.groups, 1) if any(m[0] == "player" for m in mem)), None)
         pr = next((m[1] for _l, mem in self.groups for m in mem if m[0] == "player"), 0.0)
-        self.player_min_side = 2 * 0.65 * pr  # full-size pixels
+        radii = [pr] + [float(lk["radius"]) for lk in self.player_looks] if pr else [0.0]
+        self.player_r_range = (0.65 * min(radii), 1.6 * max(radii))  # any of its looks
+        self.player_min_side = 2 * self.player_r_range[0]  # full-size pixels
         # Floating text letters are at most about bullet-sized.
         bullet_r = [m[1] for _l, mem in self.groups for m in mem if m[0] in BULLET_CLASSES]
         self.text_max_r = 1.5 * (min(bullet_r) if bullet_r else 14.0)
@@ -392,9 +425,11 @@ class Detector:
                 # The white look (solid enough: the gray ball's thin white shield doesn't count).
                 blobs = blobs + [b for b in all_blobs.get(self.white_gid, []) if b[4] >= 0.7]
                 if self.shade_gid and all_blobs.get(self.shade_gid) and not any(
-                        0.65 * player_r <= b[2] * s <= 1.6 * player_r for b in blobs):
+                        self.player_r_range[0] <= b[2] * s <= self.player_r_range[1] for b in blobs):
                     # the player behind a HUD panel (too dark = the boss's dark middle or a HUD box)
-                    blobs = blobs + [b for b in all_blobs[self.shade_gid] if b[3][0] >= 60]
+                    # and round (HUD boxes like the "P" key are this dark gray too, but wide).
+                    blobs = blobs + [b for b in all_blobs[self.shade_gid]
+                                     if b[3][0] >= 60 and max(b[5][2], b[5][3]) <= 1.4 * min(b[5][2], b[5][3])]
             if not blobs:
                 continue
             # Orange shooters are a ball inside a ring; orange bullets are the same ball without one.
@@ -420,14 +455,12 @@ class Detector:
                 cls, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
                 if r < smallest * 0.45:
                     continue  # specks and explosion particles
-                if (cls in BULLET_CLASSES or cls == "player") and r > r_exp * 2:
+                if cls in BULLET_CLASSES and r > r_exp * 2:
                     continue
-                if cls == "player" and not (0.65 * r_exp <= r <= 1.6 * r_exp):
+                if cls == "player" and not (self.player_r_range[0] <= r <= self.player_r_range[1]):
                     continue  # HUD text is gray too, but much smaller than the player
                 if cls in BULLET_CLASSES and fill < 0.45:
                     continue  # bullets are balls; a lone "+" of a score popup fills only a third of its box
-                if cls == "player" and max(box[2], box[3]) > 1.4 * min(box[2], box[3]):
-                    continue  # the player is round; HUD boxes (like the "P" key) are not
                 if cls in SOLID_KINDS and cls != "player" and solid < MIN_SOLIDITY and r <= 35:
                     continue  # floating text ("+10" etc.) in a mob's color: not solid like the real thing
                               # (only small things: a big mob can look dented when another overlaps it)
