@@ -142,9 +142,11 @@ class Bot:
             if time.perf_counter() - fps_t > 1:
                 r = self.runner
                 cap = getattr(io, "capture", None)
-                if cap is not None and cap.note and not getattr(self, "_noted", False):
+                if cap is not None and cap.note and getattr(self, "_noted", None) is not cap:
+                    if cap.hdr_note:
+                        self.on_event("log", cap.hdr_note)
                     self.on_event("log", cap.note)
-                    self._noted = True
+                    self._noted = cap
                 self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f} fps ({cap.method if cap else '?'}), delay "
                                      f"{1000 * (r.latency + r.input_delay):.0f} ms" +
                               (f", speed {r.player_speed:.0f}" if r.player_speed else ""))

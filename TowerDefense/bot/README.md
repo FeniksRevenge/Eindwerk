@@ -24,6 +24,9 @@ It keeps its settings (`config.json`) and pictures (`pictures/`) next to itself.
 
 It only presses keys while the Roblox window is in front (setting), and it takes over your mouse while running.
 
+**Windows HDR:** the fast screen capture (dxcam) gets wrong colors while HDR is on, so when you start the bot it
+turns HDR off (the screen flickers once) and turns it back on when you stop the bot or close the app.
+
 ## How it works
 - `winio.py`: finds the window titled "Roblox", screenshots its inside, presses keys by physical position.
 - `vision.py`: finds you (the white UFO + its gray ball) and every enemy by color and size. Sizes are relative

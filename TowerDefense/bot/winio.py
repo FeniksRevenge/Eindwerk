@@ -93,6 +93,102 @@ def mouse_button(down):
     _send(inp)
 
 
+
+# --------------------------------------------------------------------------- Windows HDR
+# dxcam gives wrong colors while Windows HDR is on, so the bot turns HDR off while it runs and back on
+# when it stops (Windows' DisplayConfig API: the same switch as Settings > Display > Use HDR).
+if IS_WINDOWS:
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class PATH_SOURCE(ctypes.Structure):
+        _fields_ = [("adapterId", LUID), ("id", ctypes.c_uint32), ("modeInfoIdx", ctypes.c_uint32),
+                    ("statusFlags", ctypes.c_uint32)]
+
+    class RATIONAL(ctypes.Structure):
+        _fields_ = [("Numerator", ctypes.c_uint32), ("Denominator", ctypes.c_uint32)]
+
+    class PATH_TARGET(ctypes.Structure):
+        _fields_ = [("adapterId", LUID), ("id", ctypes.c_uint32), ("modeInfoIdx", ctypes.c_uint32),
+                    ("outputTechnology", ctypes.c_uint32), ("rotation", ctypes.c_uint32),
+                    ("scaling", ctypes.c_uint32), ("refreshRate", RATIONAL), ("scanLineOrdering", ctypes.c_uint32),
+                    ("targetAvailable", wintypes.BOOL), ("statusFlags", ctypes.c_uint32)]
+
+    class PATH_INFO(ctypes.Structure):
+        _fields_ = [("sourceInfo", PATH_SOURCE), ("targetInfo", PATH_TARGET), ("flags", ctypes.c_uint32)]
+
+    class MODE_INFO(ctypes.Structure):
+        _fields_ = [("infoType", ctypes.c_uint32), ("id", ctypes.c_uint32), ("adapterId", LUID),
+                    ("data", ctypes.c_byte * 48)]
+
+    class INFO_HEADER(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_uint32), ("size", ctypes.c_uint32), ("adapterId", LUID), ("id", ctypes.c_uint32)]
+
+    class GET_ADVANCED_COLOR(ctypes.Structure):
+        _fields_ = [("header", INFO_HEADER), ("value", ctypes.c_uint32), ("colorEncoding", ctypes.c_uint32),
+                    ("bitsPerColorChannel", ctypes.c_uint32)]
+
+    class SET_ADVANCED_COLOR(ctypes.Structure):
+        _fields_ = [("header", INFO_HEADER), ("value", ctypes.c_uint32)]
+
+_hdr_turned_off = []  # displays the bot switched HDR off on (to switch back on later)
+
+
+def _displays():
+    n_paths, n_modes = ctypes.c_uint32(), ctypes.c_uint32()
+    if user32.GetDisplayConfigBufferSizes(2, ctypes.byref(n_paths), ctypes.byref(n_modes)) != 0:  # active paths
+        return []
+    paths, modes = (PATH_INFO * n_paths.value)(), (MODE_INFO * n_modes.value)()
+    if user32.QueryDisplayConfig(2, ctypes.byref(n_paths), paths, ctypes.byref(n_modes), modes, None) != 0:
+        return []
+    return [(p.targetInfo.adapterId, p.targetInfo.id) for p in paths[:n_paths.value]]
+
+
+def _hdr_on(adapter, target):
+    info = GET_ADVANCED_COLOR()
+    info.header.type, info.header.size = 9, ctypes.sizeof(GET_ADVANCED_COLOR)  # GET_ADVANCED_COLOR_INFO
+    info.header.adapterId, info.header.id = adapter, target
+    if user32.DisplayConfigGetDeviceInfo(ctypes.byref(info)) != 0:
+        return False
+    return bool(info.value & 0x2)  # advancedColorEnabled
+
+
+def _set_hdr(adapter, target, on):
+    s = SET_ADVANCED_COLOR()
+    s.header.type, s.header.size = 10, ctypes.sizeof(SET_ADVANCED_COLOR)  # SET_ADVANCED_COLOR_STATE
+    s.header.adapterId, s.header.id = adapter, target
+    s.value = 1 if on else 0
+    return user32.DisplayConfigSetDeviceInfo(ctypes.byref(s)) == 0
+
+
+def hdr_off():
+    """Turn Windows HDR off on every display that has it on. Returns how many were switched."""
+    if not IS_WINDOWS:
+        return 0
+    n = 0
+    try:
+        for adapter, target in _displays():
+            if _hdr_on(adapter, target) and _set_hdr(adapter, target, False):
+                _hdr_turned_off.append((adapter, target))
+                n += 1
+    except Exception:
+        pass
+    return n
+
+
+def hdr_restore():
+    """Turn HDR back on where the bot turned it off."""
+    while _hdr_turned_off:
+        adapter, target = _hdr_turned_off.pop()
+        try:
+            _set_hdr(adapter, target, True)
+        except Exception:
+            pass
+
+
+import atexit  # noqa: E402
+atexit.register(hdr_restore)
+
 # --------------------------------------------------------------------------- the Roblox window
 def find_roblox():
     """(hwnd, area) of the Roblox window. area = {"left", "top", "width", "height"}: its inside (no title
@@ -164,12 +260,20 @@ class Capture:
         self.fast = fast
         self.method = "mss"
         self.note = ""
+        self.hdr_note = ""
         self.cond = threading.Condition()
         self.taken = threading.Event()
         self.stop = threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
 
     def _open_dxcam(self, sct, area):
+        switched = hdr_off()
+        if switched:
+            self.hdr_note = f"Windows HDR turned off while the bot runs ({switched} display(s)); it's turned back on when you stop."
+            time.sleep(1.5)  # the screen flickers while it switches
+        return self._open_dxcam_checked(sct, area)
+
+    def _open_dxcam_checked(self, sct, area):
         """(camera, color fix) if dxcam works, or (None, None). dxcam can give different colors than
         a normal screenshot (HDR, color profiles): it learns a per-channel color fix from a dxcam
         picture and a normal screenshot of the same moment, and only uses dxcam if that fix makes
@@ -213,14 +317,12 @@ class Capture:
         ident = np.arange(256)[:, None]
         shift = int(np.abs(lut[30:241].astype(int) - ident[30:241]).max())
         if err > 8 or shift > 12:
-            # a strong color change (Windows HDR does this) also flattens bright colors (yellow, orange,
-            # bullets look alike), which no fix can undo: use the normal screenshots instead
-            self.note = (f"fast capture (dxcam) gives different colors (shift {shift}, error {err:.0f}); probably "
-                         "Windows HDR is on. Using normal screenshots (slower). Turning HDR off in Windows "
-                         "Settings > Display makes the bot faster.")
-            return None, None
+            # colors still differ (HDR couldn't be switched off?): use dxcam anyway, with the color fix
+            self.note = (f"fast capture (dxcam) on, but its colors differ from a normal screenshot (shift {shift}, "
+                         f"error {err:.0f}); is Windows HDR still on? If the bot can't see you, turn HDR off.")
+            return cam, lut
         self.note = f"fast capture (dxcam) on, colors checked (shift {shift})"
-        return cam, lut
+        return cam, None
 
     def _run(self):
         import mss
@@ -282,6 +384,7 @@ class Capture:
     def close(self):
         self.stop.set()
         self.taken.set()
+        hdr_restore()
 
 
 # --------------------------------------------------------------------------- the bot's hands
