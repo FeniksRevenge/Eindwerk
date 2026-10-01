@@ -466,9 +466,10 @@ def is_game_over(bgr):
     return game_over_info(bgr)["game_over"]
 
 
-def find_play_again(bgr):
-    """Center (x, y) of the PLAY AGAIN button on the GAME OVER screen, or None: the dark panel in the
-    middle, then the left of the two lighter buttons at its bottom (or where it sits on the panel)."""
+def find_play_again(bgr, which="left"):
+    """Center (x, y) of a button on the GAME OVER screen, or None: the dark panel in the middle, then
+    the left (PLAY AGAIN) or right (LEAVE) of the two lighter buttons at its bottom (or where it sits
+    on the panel)."""
     h, w = bgr.shape[:2]
     s = 4
     small = cv2.resize(bgr, (w // s, h // s), interpolation=cv2.INTER_AREA).astype(np.int16)
@@ -490,10 +491,14 @@ def find_play_again(bgr):
     m, _l, bs, bc = cv2.connectedComponentsWithStats(lighter, connectivity=8)
     buttons = [(bc[j][0], bc[j][1]) for j in range(1, m)
                if bs[j, cv2.CC_STAT_WIDTH] > 0.2 * pw and bs[j, cv2.CC_STAT_HEIGHT] > 0.04 * ph]
-    if buttons:
-        bx, by = min(buttons)
+    if len(buttons) >= 2 or (buttons and which == "left"):
+        bx, by = min(buttons) if which == "left" else max(buttons)
         return ((px + bx) * s + s / 2, (y0 + by) * s + s / 2)
-    return ((px + 0.279 * pw) * s, (py + 0.880 * ph) * s)
+    return ((px + (0.279 if which == "left" else 0.72) * pw) * s, (py + 0.880 * ph) * s)
+
+
+def find_leave(bgr):
+    return find_play_again(bgr, "right")
 
 
 # --------------------------------------------------------------------------- pictures for debugging

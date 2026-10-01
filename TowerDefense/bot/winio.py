@@ -34,7 +34,7 @@ def make_dpi_aware():
 make_dpi_aware()
 
 # Physical key positions (QWERTY W A S D = AZERTY Z Q S D) and Space.
-SCANCODES = {"up": 0x11, "left": 0x1E, "down": 0x1F, "right": 0x20, "space": 0x39}
+SCANCODES = {"up": 0x11, "left": 0x1E, "down": 0x1F, "right": 0x20, "space": 0x39, "e": 0x12}
 
 if IS_WINDOWS:
     from ctypes import wintypes
@@ -446,6 +446,12 @@ class WindowsIO:
         mouse_button(True)
         time.sleep(0.06)
         mouse_button(False)
+
+    def tap(self, name):
+        """Press and let go of a key (E: start the arcade game when standing at it)."""
+        press(name, True)
+        time.sleep(0.08)
+        press(name, False)
 
     def release(self):
         self.set_keys(())

@@ -310,7 +310,7 @@ class App:
         s = self.bot.settings
         self.auto = tk.BooleanVar(value=s["auto_restart"])
         self.focus = tk.BooleanVar(value=s["require_focus"])
-        ttk.Checkbutton(wrap, text="Auto restart: click PLAY AGAIN after a game over", variable=self.auto,
+        ttk.Checkbutton(wrap, text="Auto restart: click LEAVE after a game over, then press E", variable=self.auto,
                         command=self.save).pack(anchor="w")
         ttk.Checkbutton(wrap, text="Only press keys while Roblox is the window in front", variable=self.focus,
                         command=self.save).pack(anchor="w", pady=(2, 8))

@@ -335,6 +335,9 @@ class FakeIO:
     def aim(self, x, y):
         self.g.aim = (x, y)
 
+    def tap(self, name):
+        pass
+
     def click(self, x, y):
         pass
 

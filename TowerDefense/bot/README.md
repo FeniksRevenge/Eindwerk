@@ -12,8 +12,9 @@ It keeps its settings (`config.json`) and pictures (`pictures/`) next to itself.
 ## Use
 1. Open the game in Roblox (windowed is fine, any size, anywhere on the screen) and start a run.
 2. Press **`*`** (or Start). Press **`-`** to stop.
-3. It stops by itself at the GAME OVER screen, or with **Auto restart** on, clicks **PLAY AGAIN** and keeps
-   going (it waits for the countdown).
+3. It stops by itself at the GAME OVER screen, or with **Auto restart** on, clicks **LEAVE**, waits 2 s and
+   presses **E** to start the arcade game again (you're standing at the machine), and keeps going. No game
+   8 s after E: it presses E again (up to 4 times).
 
 | Key | What |
 |---|---|

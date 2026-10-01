@@ -15,7 +15,7 @@ import numpy as np
 
 from planner import BODY_BACK, MOB_SPEED, Planner, body_reach
 from tracker import Tracker
-from vision import REF_H, Detector, annotate, find_play_again, game_over_info, is_game_over, HPBar
+from vision import REF_H, Detector, annotate, find_leave, game_over_info, is_game_over, HPBar
 
 HOLD_MAX = 15.0       # seconds it may keep you at a spot by your picture alone
 RECORD_SECONDS = 8.0  # how much the "record" key saves
@@ -23,6 +23,9 @@ LOST_STILL = 45.0     # the picture hasn't changed for this long: frozen / disco
 LOST_MISSING = 90.0   # you've been gone this long without a GAME OVER screen: not in the game anymore
 LOST_WAITING = 150.0  # after an auto restart, no new game within this long
 LOST_NO_WINDOW = 60.0
+E_AFTER_LEAVE = 2.0   # after LEAVE: wait this long, then press E (you stand at the arcade machine)
+E_RETRY = 8.0         # no game yet this long after E: press it again (at most E_TRIES times)
+E_TRIES = 4
 
 
 class BotRunner:
@@ -36,6 +39,7 @@ class BotRunner:
         self.planner = Planner()
         self.recording = collections.deque()
         self.after_restart = None   # when the last auto restart click worked
+        self.lobby = None           # after LEAVE: {"left", "e", "last_e"} until the game is back
         self.no_window_since = None
         self.reset_run()
         if not getattr(self, "_me_loaded", False):
@@ -129,14 +133,21 @@ class BotRunner:
             return self._auto_restart(frame, now)
         self.game_over_since = None
         if self.restart is not None and self.restart["clicks"]:
-            # the GAME OVER screen is gone after our click: a new game (after its countdown)
+            # the GAME OVER screen is gone after clicking LEAVE: you're back next to the arcade machine
             secs = self.restart["secs"]
             self.reset_run()
             self.started = now
             self.after_restart = now
-            self.log(f"Auto restart: new game started (last one lasted {secs:.0f} s).")
+            self.lobby = {"left": now, "e": 0, "last_e": 0.0}
+            self.log(f"Left the game (it lasted {secs:.0f} s). Pressing E in {E_AFTER_LEAVE:.0f} s to start it again.")
         if not self.seen and self.after_restart is not None and now - self.after_restart > LOST_WAITING:
-            return self._lost(f"no new game {LOST_WAITING:.0f} s after clicking PLAY AGAIN")
+            return self._lost(f"no new game {LOST_WAITING:.0f} s after leaving and pressing E")
+        if self.lobby is not None:
+            if self.lobby["e"] and self.hp_bar.read(frame[::2, ::2]) is not None:
+                self.lobby = None  # the game's HUD is back: play (after its countdown)
+                self.log("New game started.")
+            else:
+                return self._press_e(now)
 
         t1 = time.perf_counter()
         player, things = self.detector.detect(frame)
@@ -323,20 +334,34 @@ class BotRunner:
                 self.log(f"Run: {run['secs'] // 60}:{run['secs'] % 60:02d}, {run['hits']} hits "
                          f"{run['causes'] or ''}. Learned: {self.learner.summary()}")
 
+    def _press_e(self, now):
+        """In the lobby after LEAVE: don't touch the arrow keys (you'd walk away from the machine); press E."""
+        lb = self.lobby
+        self.release()
+        if now - lb["left"] < E_AFTER_LEAVE or not self.io.focused():
+            return "restarting"
+        if lb["e"] == 0 or (now - lb["last_e"] > E_RETRY and lb["e"] < E_TRIES):
+            self.io.tap("e")
+            lb["e"] += 1
+            lb["last_e"] = now
+            if lb["e"] > 1:
+                self.log(f"No game yet: pressed E again ({lb['e']}/{E_TRIES}).")
+        return "restarting"
+
     def _auto_restart(self, frame, now):
         r = self.restart
         if r is None:
             r = self.restart = {"since": now, "clicks": 0, "last_click": 0.0, "secs": self.run_seconds()}
-            self.log(f"Game over after {r['secs']:.0f} s. Auto restart: clicking PLAY AGAIN.")
+            self.log(f"Game over after {r['secs']:.0f} s. Auto restart: clicking LEAVE.")
         if now - r["since"] < 1.0 or now - r["last_click"] < 3.0:
             return "restarting"  # let the screen finish appearing / give the last click time to work
         if r["clicks"] >= 3:
             info = game_over_info(frame)
-            self.log(f"Auto restart failed: clicked PLAY AGAIN 3 times but the GAME OVER screen stayed "
+            self.log(f"Auto restart failed: clicked LEAVE 3 times but the GAME OVER screen stayed "
                      f"(background {info['border']}, middle {info['middle']}). Stopped.")
             self.restart = None
             return "dead"
-        pos = find_play_again(frame)
+        pos = find_leave(frame)
         if pos is None or not self.io.focused():
             return "restarting"
         self.io.click(*pos)
