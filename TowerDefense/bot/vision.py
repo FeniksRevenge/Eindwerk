@@ -104,10 +104,11 @@ class Blob:
 
 
 class Thing:
-    __slots__ = ("kind", "x", "y", "r")
+    __slots__ = ("kind", "x", "y", "r", "src")
 
-    def __init__(self, kind, x, y, r):
+    def __init__(self, kind, x, y, r, src=""):
         self.kind, self.x, self.y, self.r = kind, x, y, r
+        self.src = src  # bullets: their color ("red", "orange", "yellow")
 
     def __repr__(self):
         return f"{self.kind}({self.x:.0f},{self.y:.0f},r{self.r:.0f})"
@@ -177,7 +178,7 @@ class Detector:
                 continue  # the boss's health bar at the bottom
             if b.r < R_BULLET_MAX * k:
                 if b.round_ball():
-                    things.append(Thing("bullet", b.x, b.y, b.r))
+                    things.append(Thing("bullet", b.x, b.y, b.r, "red"))
                 elif b.aspect >= 1.5 and b.fill >= 0.45 and b.r < 2.3 * R_BULLET_MAX * k:
                     things.extend(_split_pair(b))  # two bullets touching
             elif b.r > R_BOSS_MIN * k:
@@ -196,14 +197,14 @@ class Detector:
             if ring is not None:
                 things.append(Thing("shooter", ring[0], ring[1], ring[2]))
             elif b.round_ball():
-                things.append(Thing("bullet", b.x, b.y, b.r))
+                things.append(Thing("bullet", b.x, b.y, b.r, "orange"))
 
         for b in bl["yellow"]:
             if id(b) in text or b.r < R_BULLET_MIN * k:
                 continue
             if b.r < R_BULLET_MAX * k:
                 if b.round_ball():
-                    things.append(Thing("bullet", b.x, b.y, b.r))
+                    things.append(Thing("bullet", b.x, b.y, b.r, "yellow"))
                 continue
             rr = find_rings(bgr, COLORS["yellow"][0], [(b.x, b.y)], 10.0 * k)
             ring = max((g for g in rr if g[2] > b.r * 1.1 and math.hypot(g[0] - b.x, g[1] - b.y) < g[2] * 0.75),
@@ -252,8 +253,8 @@ def _split_pair(b):
     """A long blob made of two touching bullets -> two bullets at its ends."""
     r = min(b.w, b.h) / 2.0
     if b.w >= b.h:
-        return [Thing("bullet", b.bx + r, b.y, r), Thing("bullet", b.bx + b.w - r, b.y, r)]
-    return [Thing("bullet", b.x, b.by + r, r), Thing("bullet", b.x, b.by + b.h - r, r)]
+        return [Thing("bullet", b.bx + r, b.y, r, "red"), Thing("bullet", b.bx + b.w - r, b.y, r, "red")]
+    return [Thing("bullet", b.x, b.by + r, r, "red"), Thing("bullet", b.x, b.by + b.h - r, r, "red")]
 
 
 def _text_pieces(bl, k):

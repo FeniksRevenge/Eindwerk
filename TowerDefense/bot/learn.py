@@ -5,10 +5,12 @@ Getting better run after run: what the bot remembers between runs (in learned.js
     before your HP dropped) and keeps more room from that kind from then on. Room it doesn't need
     slowly goes back to normal while you play without getting hit by that kind (too much room
     gets you cornered), so it settles where the hits stop.
-  - How fast things are: the walking speed of every enemy kind and the speed of bullets, measured
-    every run, so a new enemy is predicted right from the first moment it shows up.
+  - Measured, not guessed: the walking speed of every enemy kind, the speed of each bullet color, your
+    own speed and the game's input delay (so a new enemy or bullet is predicted right from the first
+    moment it shows up), and the real size of your hitbox: at every hit it works out how far the thing
+    that hit you really was from your body, so the body the planner dodges with matches the game's.
   - Its play style, by trying things out: every few runs it tries a small change (e.g. keep 20% more
-    room from bullets, or stay further from walls) for 3 runs and keeps it only if those runs lasted
+    room from bullets, or stay further from walls) for 4 runs and keeps it only if those runs lasted
     clearly longer than its usual runs. Runs vary a lot, so this is slow: a night gives it ~10 tries.
   - A list of every run (how long, how many hits, from what, which style), to see if it's getting better.
 """
@@ -30,6 +32,9 @@ TRIAL_RUNS = 4          # runs per try
 BASE_RUNS = 8           # compare with this many recent runs of the current style
 BETTER = 1.15           # a try is kept if its runs lasted this much longer on average
 SPEED_KINDS = ("grunt", "tiny", "tank", "yellow", "shooter", "boss")
+BULLET_COLORS = ("red", "orange", "yellow")
+BODY_RANGE = (0.9, 1.5)   # learned hitbox size, x the measured UFO shape (keeps a little safety)
+BODY_HITS = 6             # hits needed before the hitbox size is trusted
 
 
 class Learner:
@@ -37,7 +42,9 @@ class Learner:
         self.path = path
         self.room = {k: 1.0 for k in CAUSES}
         self.speed = {}           # kind -> walking speed as a fraction of yours
-        self.bullet_speed = None  # as a fraction of the window height per second
+        self.bullet_speed = {}    # color -> speed as a fraction of the window height per second
+        self.body_fits = []       # per hit: how big your body must be to just touch what hit you (x normal)
+        self.me = {}              # your speed (x window height per second) and the input delay (s)
         self.style = {k: 1.0 for k in STYLE_KEYS}
         self.base_runs = []       # run lengths (s) with the current style
         self.trial = None         # {"key", "factor", "runs"}: a style change being tried
@@ -59,7 +66,11 @@ class Learner:
                 self.room[k] = min(max(float(v), 1.0), ROOM_MAX)
         self.speed = {k: float(v) for k, v in d.get("speed", {}).items() if k in SPEED_KINDS and 0.2 < v < 2.0}
         bs = d.get("bullet_speed")
-        self.bullet_speed = float(bs) if bs and 0.1 < bs < 3.0 else None
+        self.bullet_speed = {k: float(v) for k, v in bs.items() if k in BULLET_COLORS and 0.1 < v < 3.0} \
+            if isinstance(bs, dict) else {}
+        self.body_fits = [float(v) for v in d.get("body_fits", []) if 0.3 < v < 3.0][-40:]
+        me = d.get("me", {})
+        self.me = {k: float(me[k]) for k in ("speed", "delay") if isinstance(me.get(k), (int, float))}
         self.runs = list(d.get("runs", []))[-1000:]
         for k, v in d.get("style", {}).items():
             if k in self.style:
@@ -74,7 +85,9 @@ class Learner:
     def save(self):
         d = {"room": {k: round(v, 3) for k, v in self.room.items()},
              "speed": {k: round(v, 3) for k, v in self.speed.items()},
-             "bullet_speed": self.bullet_speed and round(self.bullet_speed, 3),
+             "bullet_speed": {k: round(v, 3) for k, v in self.bullet_speed.items()},
+             "body_fits": [round(v, 3) for v in self.body_fits], "body_scale": round(self.body_scale(), 3),
+             "me": {k: round(v, 3) for k, v in self.me.items()},
              "style": {k: round(v, 3) for k, v in self.style.items()},
              "base_runs": self.base_runs, "trial": self.trial, "kept": self.kept,
              "next_try": self.next_try,
@@ -89,7 +102,8 @@ class Learner:
 
     def reset(self):
         self.room = {k: 1.0 for k in CAUSES}
-        self.speed, self.bullet_speed, self.runs = {}, None, []
+        self.speed, self.bullet_speed, self.runs = {}, {}, []
+        self.body_fits, self.me = [], {}
         self.style = {k: 1.0 for k in STYLE_KEYS}
         self.base_runs, self.trial, self.kept, self.next_try = [], None, 0, 0
         self.new_run()
@@ -142,7 +156,7 @@ class Learner:
         self.run = {"start": time.strftime("%Y-%m-%d %H:%M:%S"), "secs": 0.0, "hits": 0, "causes": {},
                     "style": {k: round(v, 2) for k, v in self.current_style().items() if abs(v - 1) > 1e-3}}
         self.samples = {k: [] for k in SPEED_KINDS}
-        self.bullet_samples = []
+        self.bullet_samples = {c: [] for c in BULLET_COLORS}
 
     def played(self, dt, tracks, V, H):
         """Call every step while you're in a game: relaxes the room and collects speeds."""
@@ -154,10 +168,23 @@ class Learner:
             if t.age < 5 or t.missing:
                 continue
             if t.kind == "bullet":
-                if len(self.bullet_samples) < 5000:
-                    self.bullet_samples.append(t.speed / H)
+                s = self.bullet_samples.get(getattr(t, "src", ""))
+                if s is not None and len(s) < 5000:
+                    s.append(t.speed / H)
             elif t.kind in self.samples and len(self.samples[t.kind]) < 5000 and V > 0:
                 self.samples[t.kind].append(t.speed / V)
+
+    def body_scale(self):
+        """How big your hitbox really is, x the UFO shape (1.0 until enough hits were measured)."""
+        if len(self.body_fits) < BODY_HITS:
+            return 1.0
+        s = sorted(self.body_fits[-20:])
+        return min(max(s[len(s) // 2], BODY_RANGE[0]), BODY_RANGE[1])
+
+    def body_fit(self, fit):
+        """A hit: the body would have to be `fit` x the UFO shape to just touch what hit you."""
+        if 0.3 < fit < 3.0:
+            self.body_fits = (self.body_fits + [fit])[-40:]
 
     def hit(self, cause):
         self.run["hits"] += 1
@@ -176,11 +203,13 @@ class Learner:
                 top = s[int(0.8 * (len(s) - 1))]  # walking at you, not stuck behind others
                 if 0.2 < top < 2.0:
                     self.speed[k] = top if k not in self.speed else 0.7 * self.speed[k] + 0.3 * top
-        if len(self.bullet_samples) >= 30:
-            s = sorted(self.bullet_samples)
-            med = s[len(s) // 2]
-            if 0.1 < med < 3.0:
-                self.bullet_speed = med if self.bullet_speed is None else 0.7 * self.bullet_speed + 0.3 * med
+        for c, s in self.bullet_samples.items():
+            if len(s) >= 30:
+                s = sorted(s)
+                med = s[len(s) // 2]
+                if 0.1 < med < 3.0:
+                    old = self.bullet_speed.get(c)
+                    self.bullet_speed[c] = med if old is None else 0.7 * old + 0.3 * med
         run = dict(self.run, secs=round(self.run["secs"]), end=how)
         if how == "game over":
             run["style_note"] = self._style_result(self.run["secs"])
@@ -200,6 +229,8 @@ class Learner:
             best = max(r["secs"] for r in done)
             text = (f"{len(done)} runs, last {len(last)} avg {_mmss(avg)}, best {_mmss(best)}")
         extra = ", ".join(f"{k} x{v:.2f}" for k, v in self.room.items() if v > 1.02)
+        if len(self.body_fits) >= BODY_HITS:
+            text += f"; hitbox x{self.body_scale():.2f}"
         style = ", ".join(f"{k} x{v:.2f}" for k, v in self.style.items() if abs(v - 1) > 1e-3)
         text += f"; style: {style or 'normal'} ({self.kept} changes kept)"
         if self.trial is not None:

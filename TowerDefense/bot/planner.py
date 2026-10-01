@@ -41,6 +41,16 @@ AIM_PRIORITY = {"yellow": 3.0, "shooter": 2.0, "tiny": 1.4, "grunt": 1.3, "tank"
 # BODY_LONG long along the aim line, BODY_WIDE across it (measured on recordings).
 BODY_BACK, BODY_LONG, BODY_WIDE = 0.35, 1.0, 1.55
 
+
+
+def body_reach(v, face, R):
+    """Your body's reach (px) from the oval's center in the direction of the vectors v (..., 2);
+    face = unit vector toward the mouse."""
+    n = np.sqrt((v ** 2).sum(-1)) + 1e-9
+    c = (v @ face) / n
+    return 1.0 / np.sqrt(c * c / (BODY_LONG * R) ** 2 + (1 - c * c) / (BODY_WIDE * R) ** 2)
+
+
 HIT_BULLET = 1e6
 HIT_MOB = 5e5
 
@@ -71,6 +81,7 @@ class Planner:
         self.room = {}                    # learned: extra room per kind ("bullet", "grunt", ...), x normal
         self.mob_speed = dict(MOB_SPEED)  # learned: walking speed per kind as a fraction of yours
         self.style = {}                   # learned play style: bullet_room, mob_room, walls, laps, crowd (x1)
+        self.body_scale = 1.0             # learned: your real hitbox size, x the UFO shape
 
     def plan(self, me, speed, tracks, W, H, latency=0.0, start=None):
         """me = (x, y, R): where you are now and your danger radius. start = where you will be when new
@@ -99,13 +110,11 @@ class Planner:
         fx, fy = (aim_pt[0] - x, aim_pt[1] - y) if aim_pt is not None else (0.0, -1.0)
         fn = math.hypot(fx, fy) or 1.0
         face = np.array([fx / fn, fy / fn])
-        body = P - face * BODY_BACK * R                    # center of the oval along every plan
+        Rb = R * self.body_scale
+        body = P - face * BODY_BACK * Rb                   # center of the oval along every plan
 
         def size(v):
-            """Your body's reach (px) in the direction of the vectors v (..., 2)."""
-            n = np.sqrt((v ** 2).sum(-1)) + 1e-9
-            c = (v @ face) / n
-            return 1.0 / np.sqrt(c * c / (BODY_LONG * R) ** 2 + (1 - c * c) / (BODY_WIDE * R) ** 2)
+            return body_reach(v, face, Rb)
 
         bullets = [t for t in tracks if t.kind == "bullet"]
         health = [t for t in tracks if t.kind == "health"]
@@ -265,3 +274,37 @@ class Planner:
             ft = math.hypot(tx - x, ty - y) / shot
             tx, ty = target.x + target.vx * ft, target.y + target.vy * ft
         return tx, ty
+
+
+# ---------------------------------------------------------------------- tuned settings
+# tests/tune.py tunes the settings above by playing thousands of fake games and writes the best ones
+# to tuned.py; they replace the hand-picked values here.
+TUNABLE = (["BULLET_MARGIN", "NEAR_BULLET", "NEAR_MOB", "CROWD_WEIGHT", "WALL", "WALL_WEIGHT", "CORNER_WEIGHT",
+            "LAP_WEIGHT", "CENTER_WEIGHT", "HEALTH_BONUS", "TURN_COST", "BOSS_KEEP"] +
+           [f"MARGIN.{k}" for k in MARGIN] + [f"AIM_PRIORITY.{k}" for k in AIM_PRIORITY])
+
+
+def get_setting(name):
+    if "." in name:
+        table, key = name.split(".")
+        return globals()[table][key]
+    return getattr(Planner, name) if hasattr(Planner, name) else globals()[name]
+
+
+def set_setting(name, value):
+    if "." in name:
+        table, key = name.split(".")
+        globals()[table][key] = value
+    elif hasattr(Planner, name):
+        setattr(Planner, name, value)
+    else:
+        globals()[name] = value
+
+
+try:
+    from tuned import TUNED
+except ImportError:
+    TUNED = {}
+for _name, _value in TUNED.items():
+    if _name in TUNABLE:
+        set_setting(_name, _value)

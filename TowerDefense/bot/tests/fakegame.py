@@ -67,6 +67,16 @@ class Obj:
 RADIUS = {"grunt": 30, "tiny": 24, "tank": 55, "shooter": 27, "yellow": 33, "boss": 100}
 HP = {"grunt": 3, "tiny": 1, "tank": 10, "shooter": 3, "yellow": 4, "boss": 120}
 SPEED = {"grunt": 0.88, "tiny": 1.0, "tank": 0.45, "shooter": 0.6, "yellow": 0.55, "boss": 0.3}
+BULLET_SPEED = {"orange": 0.9, "yellow": 0.65, "red": 0.55}   # x your speed
+
+# Measured in the real game (tests/calibrate.py writes this from a learned.json): replaces the guesses.
+CALIBRATION = os.path.join(HERE, "calibration.json")
+if os.path.exists(CALIBRATION):
+    import json
+    with open(CALIBRATION) as _f:
+        _cal = json.load(_f)
+    SPEED.update({k: v for k, v in _cal.get("speed", {}).items() if k in SPEED})
+    BULLET_SPEED.update({k: v for k, v in _cal.get("bullet_speed", {}).items() if k in BULLET_SPEED})
 
 
 class Game:
@@ -163,7 +173,8 @@ class Game:
                 o.y = min(max(o.y + (ny * want + nx * 0.5) * sp * dt, 40), H - 40)
                 if o.cd <= 0:
                     o.cd = 1.4
-                    self.bullets.append(Obj("bullet", o.x, o.y, 10, vx=nx * 0.9 * V, vy=ny * 0.9 * V, src="orange"))
+                    self.bullets.append(Obj("bullet", o.x, o.y, 10, vx=nx * BULLET_SPEED["orange"] * V,
+                                           vy=ny * BULLET_SPEED["orange"] * V, src="orange"))
             elif o.kind == "yellow":
                 o.x += nx * sp * dt
                 o.y += ny * sp * dt
@@ -171,7 +182,8 @@ class Game:
                     o.cd, o.rot = 2.0, o.rot + 0.3
                     for i in range(8):
                         a = o.rot + i * math.pi / 4
-                        self.bullets.append(Obj("bullet", o.x, o.y, 10, vx=math.cos(a) * 0.65 * V, vy=math.sin(a) * 0.65 * V, src="yellow"))
+                        self.bullets.append(Obj("bullet", o.x, o.y, 10, vx=math.cos(a) * BULLET_SPEED["yellow"] * V,
+                                                    vy=math.sin(a) * BULLET_SPEED["yellow"] * V, src="yellow"))
             elif o.kind == "boss":
                 o.rush -= dt
                 o.cd2 -= dt
@@ -185,7 +197,8 @@ class Game:
                         o.cd, o.rot, o.waves = 0.7, o.rot + 0.17, o.waves + 1
                         for i in range(18):
                             a = o.rot + i * 2 * math.pi / 18
-                            self.bullets.append(Obj("bullet", o.x, o.y, 11, vx=math.cos(a) * 0.55 * V, vy=math.sin(a) * 0.55 * V, src="red"))
+                            self.bullets.append(Obj("bullet", o.x, o.y, 11, vx=math.cos(a) * BULLET_SPEED["red"] * V,
+                                                        vy=math.sin(a) * BULLET_SPEED["red"] * V, src="red"))
                     else:
                         o.cd, o.waves = 4.0, 0
                         for i in range(3):

@@ -29,8 +29,10 @@ Turn on **Auto restart**, start a run and press `*`. It keeps playing game after
 (remembered in `learned.json` next to the app; **Reset learning** forgets it):
 - **What hit you:** it reads your HP bar; when it drops it looks at what was closest and keeps a bit more
   room from that kind of enemy (going back to normal when that kind stops hitting you).
-- **How fast things are:** enemy and bullet speeds are measured every run, so new enemies are predicted
-  right from the start.
+- **Measuring instead of guessing:** enemy speeds, the speed of each bullet color, your own speed and the
+  game's input delay are measured every run and remembered, so new enemies and bullets are predicted
+  right from the start. At every hit by a bullet or small enemy it also works out how big your hitbox
+  really is (how close that thing really came), and after 6 hits it dodges with that size.
 - **Play style, by trying:** after a few normal runs it tries a small change (more/less room from bullets
   or enemies, staying further from walls, running more or fewer laps, avoiding crowds more) for 4 runs and
   keeps it only if those runs lasted clearly longer. Runs differ a lot, so this is slow: think ~10 tries a
@@ -61,6 +63,10 @@ turns HDR off (the screen flickers once) and turns it back on when you stop the 
 - `learn.py`: what it learns between runs (see above).
 - `runner.py`: the loop; measures your speed and the game's input delay while playing and plans from where
   you'll really be when its keys land. GAME OVER screen and auto restart.
+- `tests/tune.py`: tunes all the planner's settings by playing thousands of fast fake games (late waves
+  and the boss) and writes the best to `tuned.py` (`python tests/tune.py tune`, then `compare`).
+- `tests/calibrate.py`: makes the fake game use the speeds measured in the real game
+  (`python tests/calibrate.py learned.json`).
 - `tests/fakegame.py`: a fake version of the game built from screenshot pieces, with the real rules, used to
   test the whole bot (`python tests/fakegame.py 60 3 0.12` = 3 games of 60 s with 0.12 s input delay).
 

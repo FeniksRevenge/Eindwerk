@@ -8,11 +8,12 @@ KINDS = ("bullet", "grunt", "shooter", "yellow", "tank", "tiny", "boss", "health
 
 
 class Track:
-    __slots__ = ("kind", "x", "y", "r", "vx", "vy", "age", "missing", "vmax", "id")
+    __slots__ = ("kind", "x", "y", "r", "vx", "vy", "age", "missing", "vmax", "id", "src")
     _next_id = 0
 
-    def __init__(self, kind, x, y, r, vx=0.0, vy=0.0):
+    def __init__(self, kind, x, y, r, vx=0.0, vy=0.0, src=""):
         self.kind, self.x, self.y, self.r, self.vx, self.vy = kind, x, y, r, vx, vy
+        self.src = src
         self.age = 0        # how many times it has been seen again (0 = new, speed is only a guess)
         self.missing = 0
         self.vmax = 0.0     # fastest speed seen (the boss rushes)
@@ -30,7 +31,7 @@ class Tracker:
 
     def update(self, things, dt, player_xy, max_move, new_bullet_speed):
         """things: [vision.Thing]. max_move: the fastest anything moves (px/s), to match between frames.
-        A new bullet gets a guessed speed: flying away from the boss / yellow mob next to it (their rings)
+        new_bullet_speed: px/s, or {color: px/s} (others: the "" entry). A new bullet gets a guessed speed: flying away from the boss / yellow mob next to it (their rings)
         or else straight at the player (shooters aim at you)."""
         px, py = player_xy if player_xy else (None, None)
         out = []
@@ -74,8 +75,11 @@ class Tracker:
                         else:
                             ox = oy = 0.0
                         d = math.hypot(ox, oy) or 1.0
-                        vx, vy = ox / d * new_bullet_speed, oy / d * new_bullet_speed
-                    out.append(Track(kind, n.x, n.y, n.r, vx, vy))
+                        src = getattr(n, "src", "")
+                        bs = (new_bullet_speed.get(src) or new_bullet_speed[""]) if isinstance(new_bullet_speed, dict) \
+                            else new_bullet_speed
+                        vx, vy = ox / d * bs, oy / d * bs
+                    out.append(Track(kind, n.x, n.y, n.r, vx, vy, getattr(n, "src", "")))
             # keep things that vanished for a frame or two (flicker, overlap) at their predicted spot
             for i, t in enumerate(old):
                 if i not in used and t.missing < 2:

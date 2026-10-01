@@ -13,7 +13,7 @@ import time
 import cv2
 import numpy as np
 
-from planner import MOB_SPEED, Planner
+from planner import BODY_BACK, MOB_SPEED, Planner, body_reach
 from tracker import Tracker
 from vision import REF_H, Detector, annotate, find_play_again, game_over_info, is_game_over, HPBar
 
@@ -38,8 +38,10 @@ class BotRunner:
         self.after_restart = None   # when the last auto restart click worked
         self.no_window_since = None
         self.reset_run()
-        self.input_delay = 0.08   # seconds from sending keys until you visibly move (measured while playing)
+        if not getattr(self, "_me_loaded", False):
+            self.input_delay = 0.08   # seconds from sending keys until you visibly move (measured while playing)
         self.player_speed = None  # pixels per second (measured while playing)
+        self.H = None
 
     def reset_run(self):
         self.tracker = Tracker()
@@ -60,6 +62,7 @@ class BotRunner:
         self.last = None      # everything from the latest step (screenshots, recordings)
         self.hp = None        # last trusted HP reading (0..1)
         self.hp_reads = []
+        self.hp_change = None   # when the HP bar first looked different (the hit's time)
         self.hp_bar = HPBar()
         self.history = collections.deque()   # (t, (x, y, R), things) of the last second, to see what hit you
         self.still = (None, 0.0, 0.0)          # (small picture, when, how long it hasn't changed)
@@ -68,6 +71,11 @@ class BotRunner:
             self.planner.room = self.learner.room
             self.planner.mob_speed = dict(MOB_SPEED, **self.learner.speed)
             self.planner.style = self.learner.current_style()
+            self.planner.body_scale = self.learner.body_scale()
+            if self.learner.me.get("delay") is not None and not getattr(self, "_me_loaded", False):
+                self.input_delay = min(0.4, max(0.0, self.learner.me["delay"]))
+                self._me_loaded = True
+        self.aim_pt = None
 
     def run_seconds(self):
         return 0.0 if self.first_seen is None else self.last_seen - self.first_seen
@@ -97,6 +105,9 @@ class BotRunner:
         if self.started is None:
             self.started = now
         H, W = frame.shape[:2]
+        self.H = H
+        if self.player_speed is None and self.learner is not None and self.learner.me.get("speed"):
+            self.player_speed = self.learner.me["speed"] * H  # last runs' measurement, until measured again
         if (self.seen or self.after_restart) and self._frozen(frame, now):
             return self._lost(f"the picture hasn't changed for {LOST_STILL:.0f} s")
 
@@ -169,8 +180,10 @@ class BotRunner:
             self.next_delay_check = now + 0.5
             self._measure_input_delay(V, R, W, H)
 
-        bs = (self.learner.bullet_speed if self.learner is not None else None) or 0.6
-        tracks = self.tracker.update(things, dt, (x, y), max_move=1.6 * H, new_bullet_speed=bs * H)
+        bs = {"": 0.6 * H}
+        if self.learner is not None:
+            bs.update({c: v * H for c, v in self.learner.bullet_speed.items()})
+        tracks = self.tracker.update(things, dt, (x, y), max_move=1.6 * H, new_bullet_speed=bs)
         self._watch_hp(frame, now, (x, y, R), things)
         if self.learner is not None:
             self.learner.played(dt, tracks, V, H)
@@ -193,6 +206,7 @@ class BotRunner:
             self.keys = keys
             self.key_log.append((now, keys))
             del self.key_log[1:-200]
+        self.aim_pt = aim
         if aim is not None:
             self.io.aim(min(max(aim[0], 0), W - 1), min(max(aim[1], 0), H - 1))
         self.io.fire(True)
@@ -202,32 +216,45 @@ class BotRunner:
     # ------------------------------------------------------------------ learning, and noticing trouble
     def _watch_hp(self, frame, now, me, things):
         """Reads the HP bar; when it drops, works out what hit you (the closest thing just before)."""
-        self.history.append((now, me, [(th.kind, th.x, th.y, th.r) for th in things]))
-        while self.history and now - self.history[0][0] > 1.0:
+        face = None
+        if self.aim_pt is not None:  # the UFO faces the mouse
+            fx, fy = self.aim_pt[0] - me[0], self.aim_pt[1] - me[1]
+            fn = math.hypot(fx, fy)
+            face = (fx / fn, fy / fn) if fn > 1 else None
+        self.history.append((now, me, [(th.kind, th.x, th.y, th.r) for th in things], face))
+        while self.history and now - self.history[0][0] > 1.6:
             self.history.popleft()
         small = frame[::16, ::16]
         if np.median(small[..., 2]) > max(30, 2 * np.median(small[..., 0])):
             self.hp_reads = []  # the screen flashes red right after a hit: the bar can't be read
+            if self.hp_change is None:
+                self.hp_change = now  # (when the hit happened: the bar takes a few pictures to trust)
             return
         v = self.hp_bar.read(frame[::2, ::2])
         if v is None:
             return
+        if self.hp is not None and v < self.hp - 0.05 and self.hp_change is None:
+            self.hp_change = now
         self.hp_reads = (self.hp_reads + [v])[-4:]
         if len(self.hp_reads) < 4 or max(self.hp_reads) - min(self.hp_reads) > 0.03:
             return
         v = sum(self.hp_reads) / 4
+        t_hit, self.hp_change = (self.hp_change or now), None
         if self.hp is not None and v < self.hp - 0.05:
-            cause = self._what_hit(now)
+            cause = self._what_hit(t_hit)
             self.events.append(("hit", cause))
             if self.learner is not None:
                 self.learner.hit(cause)
+                fit = self._body_fit(t_hit, cause)
+                if fit is not None:
+                    self.learner.body_fit(fit)
             self.log(f"Hit by {cause} (HP {10 * v:.0f}/10).")
         self.hp = v
 
     def _what_hit(self, now):
         best, cause = None, "unknown"
-        for t, (x, y, R), things in self.history:
-            if now - t > 0.8:
+        for t, (x, y, R), things, _ in self.history:
+            if not -0.6 <= t - now <= 0.05:
                 continue
             for kind, tx, ty, tr in things:
                 if kind in ("health", "spawn"):
@@ -236,6 +263,35 @@ class BotRunner:
                 if best is None or g < best:
                     best, cause = g, kind
         return cause if best is not None and best < 2.5 else "unknown"
+
+    def _body_fit(self, now, cause):
+        """How big your body must have been (x the UFO shape) to just touch the thing that hit you:
+        the closest it came to you in the last moments, between screenshots too (things move a lot
+        from one screenshot to the next)."""
+        if cause not in ("bullet", "grunt", "tiny", "yellow", "shooter"):
+            return None  # (only small, round-ish things: the boss's and tanks' outlines are too rough)
+        h = [e for e in self.history if -0.6 <= e[0] - now <= 0.05 and e[3] is not None]
+        best = None
+        for (ta, ma, tha, fa), (tb, mb, thb, _) in zip(h, h[1:]):
+            R = ma[2]
+            face = np.array(fa)
+            ca = np.array(ma[:2]) - face * BODY_BACK * R
+            cb = np.array(mb[:2]) - face * BODY_BACK * R
+            lim = 1.6 * (self.H or 1000) * (tb - ta) + 3 * R
+            for kind, x, y, r in tha:
+                if kind != cause:
+                    continue
+                nxt = min(((math.hypot(x2 - x, y2 - y), x2, y2) for k2, x2, y2, r2 in thb if k2 == kind),
+                          default=None)
+                ra = np.array([x, y]) - ca
+                rb = (np.array(nxt[1:]) - cb) if nxt is not None and nxt[0] < lim else ra
+                seg = rb - ra
+                u = min(1.0, max(0.0, -float(ra @ seg) / (float(seg @ seg) + 1e-9)))
+                c = ra + u * seg
+                fit = (float(np.hypot(*c)) - r) / float(body_reach(c, face, R))
+                if best is None or fit < best:
+                    best = fit
+        return best
 
     def _frozen(self, frame, now):
         pic, t, still = self.still
@@ -260,6 +316,8 @@ class BotRunner:
             return
         self.run_over = True
         if self.learner is not None:
+            if self.player_speed and self.H:
+                self.learner.me = {"speed": self.player_speed / self.H, "delay": self.input_delay}
             run = self.learner.end_run(how)
             if run is not None:
                 self.log(f"Run: {run['secs'] // 60}:{run['secs'] % 60:02d}, {run['hits']} hits "
