@@ -118,6 +118,41 @@ def foreground_is(hwnd):
 
 
 # --------------------------------------------------------------------------- screenshots
+def fit_color_lut(dx, ref):
+    """Per-channel color fix from dxcam pixels to normal-screenshot pixels (N x 3 each, same spots).
+    Returns (lut 256x3 or None, mean error on colored pixels after the fix, number of colored pixels).
+    Pixels that changed between the two pictures (moving things) are outliers; medians ignore them."""
+    colored = ref.max(axis=1) > 40
+    n = int(colored.sum())
+    if n < 2000:
+        return None, 0.0, n
+    lut = np.zeros((256, 3), np.uint8)
+    for c in range(3):
+        x, y = dx[:, c].astype(np.int32), ref[:, c].astype(np.float32)
+        med = np.full(256, np.nan, np.float32)
+        counts = np.bincount(x, minlength=256)
+        ys = y[np.argsort(x, kind="stable")]
+        starts = np.concatenate([[0], np.cumsum(counts)])
+        for v in np.nonzero(counts >= 5)[0]:
+            med[v] = np.median(ys[starts[v]:starts[v + 1]])
+        known = np.nonzero(~np.isnan(med))[0]
+        if len(known) < 2:
+            return None, 0.0, n
+        full = np.interp(np.arange(256), known, med[known])
+        lut[:, c] = np.clip(np.maximum.accumulate(full), 0, 255).astype(np.uint8)  # keep it increasing
+    fixed = lut[dx, np.arange(3)]
+    both = colored & (fixed.max(axis=1) > 40)  # colored in both (things that moved in between aren't)
+    diff = np.abs(fixed.astype(np.int16) - ref.astype(np.int16)).max(axis=1)[both]
+    err = float(np.median(diff)) if len(diff) else 0.0
+    return lut, err, n
+
+
+def apply_color_lut(frame, lut):
+    if lut is None:
+        return frame
+    import cv2
+    return cv2.LUT(frame, lut.reshape(256, 1, 3))
+
 class Capture:
     """Screenshots of the Roblox window's inside on a background thread. A new one is taken as soon as
     the bot took the previous one, so the bot always gets a fresh picture without waiting long.
@@ -135,45 +170,62 @@ class Capture:
         threading.Thread(target=self._run, daemon=True).start()
 
     def _open_dxcam(self, sct, area):
-        """A dxcam camera, if it works and gives the same picture as a normal screenshot."""
+        """(camera, color fix) if dxcam works, or (None, None). dxcam can give different colors than
+        a normal screenshot (HDR, color profiles): it learns a per-channel color fix from a dxcam
+        picture and a normal screenshot of the same moment, and only uses dxcam if that fix makes
+        them match."""
         try:
             import dxcam
             cam = dxcam.create(output_color="BGR")
         except Exception as e:
             self.note = f"fast capture (dxcam) not available ({e}); using mss"
-            return None
+            return None, None
         if cam is None:
-            return None
+            return None, None
         box = (area["left"], area["top"], area["left"] + area["width"], area["top"] + area["height"])
-        img = None
-        for _ in range(100):  # dxcam gives None until something on screen changes
+        pairs = []
+        for _ in range(300):  # a few pairs with enough colored things on screen
             try:
                 img = cam.grab(region=box)
             except Exception as e:
                 self.note = f"fast capture (dxcam) can't capture the Roblox window ({e}); using mss"
-                return None
-            if img is not None:
+                return None, None
+            if img is None:
+                time.sleep(0.01)
+                continue
+            ref = np.ascontiguousarray(np.asarray(sct.grab(area))[:, :, :3])
+            if img.shape[:2] != ref.shape[:2]:
+                self.note = "fast capture (dxcam) gave a different size; using mss"
+                return None, None
+            pairs.append((np.ascontiguousarray(img[:, :, :3]), ref))
+            if len(pairs) >= 3:
                 break
-            time.sleep(0.01)
-        if img is None:
-            return cam  # nothing changed for a second: can't compare, try it
-        ref = np.asarray(sct.grab(area))[:, :, :3]
-        if img.shape[:2] != ref.shape[:2]:
-            self.note = "fast capture (dxcam) gave a different size; using mss"
-            return None
-        import cv2
-        small = lambda x: cv2.GaussianBlur(cv2.resize(np.ascontiguousarray(x[:, :, :3]), (160, 90),
-                                                      interpolation=cv2.INTER_AREA), (7, 7), 0).astype(np.int16)
-        diff = np.abs(small(img) - small(ref)).max(axis=2)
-        if float(diff.mean()) > 12:
-            self.note = "fast capture (dxcam) gave a different picture (HDR / other graphics card?); using mss"
-            return None
-        return cam
+            time.sleep(0.05)
+        if not pairs:
+            self.note = "fast capture (dxcam) gave no pictures; using mss"
+            return None, None
+        dx = np.concatenate([p[0].reshape(-1, 3) for p in pairs])
+        ref = np.concatenate([p[1].reshape(-1, 3) for p in pairs])
+        lut, err, n = fit_color_lut(dx, ref)
+        if lut is None:
+            self.note = f"fast capture (dxcam): can't check its colors (only {n} colored pixels); using mss"
+            return None, None
+        ident = np.arange(256)[:, None]
+        shift = int(np.abs(lut[30:241].astype(int) - ident[30:241]).max())
+        if err > 8 or shift > 12:
+            # a strong color change (Windows HDR does this) also flattens bright colors (yellow, orange,
+            # bullets look alike), which no fix can undo: use the normal screenshots instead
+            self.note = (f"fast capture (dxcam) gives different colors (shift {shift}, error {err:.0f}); probably "
+                         "Windows HDR is on. Using normal screenshots (slower). Turning HDR off in Windows "
+                         "Settings > Display makes the bot faster.")
+            return None, None
+        self.note = f"fast capture (dxcam) on, colors checked (shift {shift})"
+        return cam, lut
 
     def _run(self):
         import mss
         sct = mss.mss()
-        cam, cam_area = None, None
+        cam, cam_area, lut = None, None, None
         next_find, area, last_frame, last_new = 0.0, None, None, 0.0
         while not self.stop.is_set():
             now = time.perf_counter()
@@ -188,7 +240,7 @@ class Capture:
                 time.sleep(0.2)
                 continue
             if self.fast and cam is None and cam_area is None:
-                cam = self._open_dxcam(sct, area)  # tried once; mss if it doesn't work
+                cam, lut = self._open_dxcam(sct, area)  # tried once; mss if it doesn't work
                 self.method = "dxcam" if cam else "mss"
             cam_area = dict(area)
             try:
@@ -198,7 +250,7 @@ class Capture:
                     box = (area["left"], area["top"], area["left"] + area["width"], area["top"] + area["height"])
                     img = cam.grab(region=box)
                     if img is not None:
-                        frame = np.ascontiguousarray(img[:, :, :3])
+                        frame = apply_color_lut(np.ascontiguousarray(img[:, :, :3]), lut)
                     elif last_frame is not None and t - last_new < 0.15:
                         time.sleep(0.003)  # nothing changed on screen yet
                         continue
