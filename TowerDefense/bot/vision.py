@@ -236,6 +236,19 @@ def set_main_player(cfg, lab, radius):
     colors["player"] = {"lab": [int(round(v)) for v in lab], "radius": round(float(radius), 1)}
 
 
+def is_game_over(bgr):
+    """The GAME OVER screen: the whole background turns dark red and a big dark gray panel (score, top
+    scores, PLAY AGAIN) sits in the middle. A red hit flash or a big red boss doesn't look like that."""
+    small = cv2.resize(bgr, (160, 90), interpolation=cv2.INTER_AREA).astype(np.int16)
+    border = np.concatenate([small[:10].reshape(-1, 3), small[-10:].reshape(-1, 3),
+                             small[:, :12].reshape(-1, 3), small[:, -12:].reshape(-1, 3)])
+    b, g, r = np.median(border, axis=0)
+    if not (r >= 25 and r - max(b, g) >= 15):
+        return False  # background isn't dark red
+    cb, cg, cr = np.median(small[25:70, 55:105].reshape(-1, 3), axis=0)
+    return 12 <= max(cb, cg, cr) <= 70 and max(cb, cg, cr) - min(cb, cg, cr) <= 14  # dark gray panel
+
+
 def _bin_lab():
     global _BIN_LAB
     if _BIN_LAB is None:

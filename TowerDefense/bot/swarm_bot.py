@@ -344,7 +344,7 @@ def read_config_or_empty():
 def save_config(cfg):
     cfg.setdefault("downscale", 2)
     cfg.setdefault("tolerance", DEFAULT_TOLERANCE)
-    cfg.setdefault("death_timeout", 4.0)
+    cfg.setdefault("death_timeout", 30.0)
     cfg.setdefault("require_focus", True)
     cfg.setdefault("fire_with", "space")
     cfg.setdefault("auto_shot_every", 10)
@@ -633,7 +633,7 @@ class BotController:
                 self.running = False
                 bot.io.close()
                 self.on_event("status", "Stopped (died)")
-                self.on_event("log", f"Player gone for {bot.death_timeout:.0f}s: died after {bot.run_seconds():.0f}s. "
+                self.on_event("log", f"Died ({bot.death_reason}) after {bot.run_seconds():.0f}s. "
                                      "Stopped. Press * to start again.")
                 continue
             # Periodic photos for the photo trainer (capped so the folder can't fill the disk).
@@ -645,6 +645,13 @@ class BotController:
             if not capture_logged and grabber is not None and grabber.note:
                 self.on_event("log", grabber.note[0].upper() + grabber.note[1:] + ".")
                 capture_logged = True
+            if bot.lost_report:  # lost the player for 1 s mid-run (once per run): keep a picture of it
+                bot.lost_report = False
+                self._take_screenshot(bot)
+                p = bot.player
+                self.on_event("log", "Lost track of you for 1 s" + (f" near ({p[0]:.0f}, {p[1]:.0f})" if p else "") +
+                                     ": saved a screenshot of what the bot saw. If you were really there, send it "
+                                     "(the bot keeps playing and only stops at the GAME OVER screen).")
             # Never found the player in the first 3 s: save what the bot sees (once per run) to check it.
             if not blind_shot and status == "waiting" and bot.waiting_time() > 3.0:
                 blind_shot = True

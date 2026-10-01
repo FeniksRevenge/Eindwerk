@@ -184,9 +184,9 @@ class App:
         fire_box = ttk.Combobox(grid, textvariable=self.fire_var, values=["Space", "Left mouse"], state="readonly", width=12)
         fire_box.grid(row=2, column=1, sticky="e", pady=(6, 0))
         fire_box.bind("<<ComboboxSelected>>", lambda _e: self.save_settings())
-        tk.Label(grid, text="Stop after player missing (s)", bg=BG, fg=FG, font=FONT).grid(row=0, column=0, sticky="w")
-        self.death_var = tk.DoubleVar(value=cfg.get("death_timeout", 1.5))
-        ttk.Spinbox(grid, from_=0.5, to=10, increment=0.5, textvariable=self.death_var, width=6,
+        tk.Label(grid, text="Also stop if it can't see you for (s)", bg=BG, fg=FG, font=FONT).grid(row=0, column=0, sticky="w")
+        self.death_var = tk.DoubleVar(value=max(20.0, float(cfg.get("death_timeout", 30.0))))
+        ttk.Spinbox(grid, from_=20, to=120, increment=5, textvariable=self.death_var, width=6,
                     command=self.save_settings).grid(row=0, column=1, sticky="e", padx=(12, 0))
         tk.Label(grid, text="Color tolerance", bg=BG, fg=FG, font=FONT).grid(row=1, column=0, sticky="w", pady=(6, 0))
         tol = cfg.get("tolerance", DEFAULT_TOLERANCE)

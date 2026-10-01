@@ -6,7 +6,8 @@ it holds WASD to dodge, moves the mouse to aim and holds **Space** to shoot (swi
 - **`*`** starts it (Shift+8 or numpad `*`)
 - **`-`** stops it
 - **`/`** saves a screenshot of what the bot sees (you keep playing; see below)
-- It keeps playing until you die: it **stops by itself** once your player has been gone for 4 seconds
+- It keeps playing until you die: it **stops by itself when the GAME OVER screen appears** (dark red background
+  with the score panel). As a backup it also stops if it can't see you at all for 30 seconds (setting).
 - It only sends keys/mouse while the **Roblox window is in front**, so it won't type into other apps
 
 Windows only.
@@ -32,8 +33,8 @@ Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It 
 - the bot's status (Running / Stopped (died) / Waiting for the player) and its speed in fps
 - **Fast screen capture (dxcam)**: on by default; untick it if the bot can't find you (see below)
 - **Calibrate everything**, **Test view** and **Redo one** (recalibrate just the boss, a bullet, ...)
-- settings: only control Roblox when it's the active window, how long the player must be gone
-  before it counts as dead, and color tolerance
+- settings: only control Roblox when it's the active window, how long it may not see you before it stops
+  anyway (backup; it normally stops at the GAME OVER screen), and color tolerance
 - a log of what happened
 
 ## Quick setup (no clicking)
@@ -157,7 +158,7 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 |---------|--------------|
 | `tolerance` | How close a color must be, `[L, a, b]`. Raise if things aren't found, lower if random stuff is. |
 | `downscale` | 2 = look at half resolution (faster). 1 = full resolution (more accurate, slower). |
-| `death_timeout` | Seconds the player must be missing before it counts as dead and stops (at least 3). |
+| `death_timeout` | Backup: seconds it may not see you before it stops anyway (at least 20). It normally stops at the GAME OVER screen. |
 | `require_focus` | `true` = only send input while Roblox is the active window. |
 | `fast_capture` | `true` = fast dxcam capture (checked against a normal screenshot at start), `false` = always mss. |
 | `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
@@ -191,6 +192,12 @@ are bigger than bullets.
   photo-trainer examples), danger size, and the **ignore list**. Select a row to:
   **Relearn** it (screenshot now, or from saved screenshots), **Reset to preset**, **Make main look** (for a
   player look), or **Remove** it (a player look, an ignore entry, or a thing).
+
+## Standing still / not recognized for a moment
+Every time the bot recognizes you it keeps a small picture of you. If it suddenly can't recognize you (standing
+still, a hit flash, half behind something), it checks whether that picture is still at your spot and keeps
+playing from there (up to 15 s at a time). The first time in a run it really loses you for 1 second it saves
+a screenshot and says so in the log: send it if you were actually there.
 
 ## Your player's look
 The bot knows both looks of your player: the **gray ball** (with its white shield) and the **white UFO**
