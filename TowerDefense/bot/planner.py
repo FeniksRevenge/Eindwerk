@@ -49,6 +49,12 @@ class Planner:
     WALL_WEIGHT = 900.0
     CORNER_WEIGHT = 3000.0
     SPAWN_WEIGHT = 800.0
+    # HUD panels drawn over the arena (fractions of the window: x0, y0, x1, y1, weight). You can't be
+    # seen under them, so the bot would lose track of you there: stay out.
+    HUD = ((0.02, 0.036, 0.242, 0.117, 1500.0),    # HP panel, top left
+           (0.754, 0.036, 0.995, 0.175, 1500.0),   # score panels, top right
+           (0.20, 0.945, 0.82, 1.0, 1500.0),       # key hints, bottom
+           (0.26, 0.067, 0.75, 0.21, 500.0))       # wave banner (only there between waves)
     LAP_WEIGHT = 150.0    # how much it likes running laps around the middle (x2 with the boss there)
     CENTER_WEIGHT = 60.0
     HEALTH_BONUS = 3000.0
@@ -149,6 +155,12 @@ class Planner:
         cost += near_x * near_y * self.CORNER_WEIGHT
         cdist = np.hypot(end[:, 0] - W / 2, end[:, 1] - H / 2) / (0.5 * min(W, H))
         cost += cdist ** 2 * self.CENTER_WEIGHT
+
+        # --- HUD panels: share of the plan spent under one (grown by your size)
+        for x0, y0, x1, y1, wgt in self.HUD:
+            inside = ((P[..., 0] > x0 * W - R) & (P[..., 0] < x1 * W + R) &
+                      (P[..., 1] > y0 * H - R) & (P[..., 1] < y1 * H + R))
+            cost += inside[:, 1:].mean(axis=1) * wgt
 
         # --- green health circles on the way
         if health:

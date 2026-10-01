@@ -61,8 +61,10 @@ class BotRunner:
     # ------------------------------------------------------------------ one step
     def step(self):
         """Returns "playing", "waiting" (you're not visible yet), "no_window", "restarting" or "dead"."""
+        t0 = time.perf_counter()
         frame = self.io.grab()
         now = self.io.now()
+        self.ms = {"grab": round(1000 * (time.perf_counter() - t0), 1)}
         if frame is None:
             self.release()
             return "no_window"
@@ -96,7 +98,9 @@ class BotRunner:
             self.started = now
             self.log(f"Auto restart: new game started (last one lasted {secs:.0f} s).")
 
+        t1 = time.perf_counter()
         player, things = self.detector.detect(frame)
+        self.ms["detect"] = round(1000 * (time.perf_counter() - t1), 1)
         held = False
         if player is None and self.template is not None and self.player is not None and self.hold < HOLD_MAX:
             player = self._match_template(frame)  # not recognized, but still right there?
@@ -139,7 +143,9 @@ class BotRunner:
         # the keys sent since then are still on their way
         lat = min(0.45, self.latency + self.input_delay)
         sx, sy = self._replay(x, y, t_grab - self.input_delay, now, V)
+        t1 = time.perf_counter()
         keys, aim = self.planner.plan((x, y, R), V, tracks, W, H, latency=lat, start=(sx, sy))
+        self.ms["plan"] = round(1000 * (time.perf_counter() - t1), 1)
 
         self.last = {"frame": frame, "player": player, "things": things, "keys": keys, "aim": aim, "t": t_grab,
                      "speed": V, "delay": lat, "note": "held" if held else ""}
@@ -272,15 +278,19 @@ class BotRunner:
         if last is None:
             return
         t = last["t"]
-        if self.recording and t - self.recording[-1][0] < 1 / 15:
+        if self.recording and t - self.recording[-1][0] < 1 / 10:
             return
-        small = cv2.resize(last["frame"], None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
-        ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        t1 = time.perf_counter()
+        small = cv2.resize(last["frame"], None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
+        ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        cap = getattr(self.io, "capture", None)
         info = {"t": round(t, 3), "player": last["player"] and [round(v, 1) for v in last["player"]],
                 "keys": list(last["keys"]), "aim": last["aim"] and [round(v) for v in last["aim"]],
                 "things": [[th.kind, round(th.x), round(th.y), round(th.r)] for th in last["things"]],
                 "speed": round(last.get("speed", 0) or 0), "delay": round(last.get("delay", 0) or 0, 3),
-                "note": last.get("note", "")}
+                "note": last.get("note", ""), "ms": dict(getattr(self, "ms", {}),
+                                                          record=round(1000 * (time.perf_counter() - t1), 1)),
+                "capture": getattr(cap, "method", "")}
         self.recording.append((t, jpg.tobytes() if ok else b"", info))
         while self.recording and t - self.recording[0][0] > RECORD_SECONDS:
             self.recording.popleft()
