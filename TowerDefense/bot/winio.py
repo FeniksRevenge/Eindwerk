@@ -388,10 +388,21 @@ class Capture:
 
 
 # --------------------------------------------------------------------------- the bot's hands
+def keep_awake(on):
+    """While the bot runs: don't let Windows sleep or turn the screen off (screen capture stops then)."""
+    try:
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
+        flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED if on else 0)
+        ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(flags))
+    except Exception:
+        pass
+
+
 class WindowsIO:
     """What the bot runner talks to: screenshots in, keys and mouse out (in window coordinates)."""
 
     def __init__(self, require_focus=True, fast_capture=True):
+        keep_awake(True)
         self.require_focus = require_focus
         self.capture = Capture(fast_capture)
         self.seq = 0
@@ -443,3 +454,4 @@ class WindowsIO:
     def close(self):
         self.release()
         self.capture.close()
+        keep_awake(False)

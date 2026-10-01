@@ -284,6 +284,15 @@ class Game:
             paste(img, sprite("hud_chat"), 172, 195)
         if self.t < self.banner_until:
             paste(img, sprite("hud_banner"), 1002, 155)
+        # the HP bar: the red part shrinks with your HP (the sprite is a full bar; drawn last:
+        # the chat sprite was cut from a screenshot with the bar in it)
+        hp_sp = sprite("hud_hp")
+        fill = (np.abs(hp_sp.astype(int) - (19, 16, 39)).sum(-1) < 12)
+        cols, rows = np.flatnonzero(fill.any(0)), np.flatnonzero(fill.any(1))
+        x0, x1 = 40 + cols[0], 40 + cols[-1] + 1
+        xe = int(x0 + (x1 - x0) * max(0, self.hp) / 10)
+        part = img[40 + rows[0]:40 + rows[-1] + 1, xe:x1]
+        part[fill[rows[0]:rows[-1] + 1, xe - 40:x1 - 40]] = (14, 12, 12)
         return img
 
 
@@ -321,10 +330,10 @@ class FakeIO:
         self.fire(False)
 
 
-def play(seed, seconds=60, delay=0.12, boss=False, video=None):
+def play(seed, seconds=60, delay=0.12, boss=False, video=None, learner=None):
     from runner import BotRunner
     g = Game(seed, key_delay=delay, boss_wave=boss)
-    bot = BotRunner(FakeIO(g))
+    bot = BotRunner(FakeIO(g), learner=learner)
     out = None
     while g.t < seconds and not g.dead:
         bot.step()
@@ -336,7 +345,10 @@ def play(seed, seconds=60, delay=0.12, boss=False, video=None):
                 out.write(cv2.resize(pic, (W // 2, H // 2)))
     if out is not None:
         out.release()
-    return {"t": round(g.t), "hits": g.hits, "what": g.hit_log, "dead": g.dead, "kills": g.kills, "wave": g.wave,
+    if learner is not None:
+        bot._end_run("game over" if g.dead else "stopped")
+    seen = [c for k, c in bot.events if k == "hit"]
+    return {"seen_hits": seen, "t": round(g.t), "hits": g.hits, "what": g.hit_log, "dead": g.dead, "kills": g.kills, "wave": g.wave,
             "speed": round(bot.player_speed or 0), "delay": round(bot.input_delay, 2)}
 
 
@@ -345,9 +357,15 @@ if __name__ == "__main__":
     seeds = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     delay = float(sys.argv[3]) if len(sys.argv) > 3 else 0.12
     boss = len(sys.argv) > 4 and sys.argv[4] == "boss"
+    learner = None
+    if os.environ.get("LEARN"):  # LEARN=file.json: learn across the games, like the app does
+        from learn import Learner
+        learner = Learner(os.environ["LEARN"])
     tot_hits, tot_t = 0, 0.0
     for seed in range(seeds):
-        r = play(seed, secs, delay, boss)
+        r = play(seed, secs, delay, boss, learner=learner)
+        if learner is not None:
+            r["room"] = {k: round(v, 2) for k, v in learner.room.items() if v > 1.005}
         tot_hits += r["hits"]
         tot_t += r["t"]
         print(r, flush=True)

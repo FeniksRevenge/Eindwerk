@@ -20,6 +20,9 @@ FROZEN = getattr(sys, "frozen", False)
 HOME = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG = os.path.join(HOME, "config.json")
 PICTURES = os.path.join(HOME, "pictures")
+HITS = os.path.join(PICTURES, "hits")
+LEARNED = os.path.join(HOME, "learned.json")
+HIT_CLIPS_KEPT = 40
 
 BG, PANEL, LINE, FG, MUTED = "#07090d", "#11151c", "#232a35", "#e4e7ec", "#8a93a1"
 GREEN, RED, AMBER = "#6fdc8c", "#e84a4a", "#ffa040"
@@ -53,7 +56,14 @@ class Bot:
         self._snap, self._rec = threading.Event(), threading.Event()
         self.running = False
         self.runner = None
+        from learn import Learner
+        self.learner = Learner(LEARNED)
+        self._reset = threading.Event()
+        self.pending_clips = []   # (when to save, cause): a hit is saved a second later, to show what followed
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def reset_learning(self):
+        self._reset.set()
 
     def start(self):
         self._start.set()
@@ -99,12 +109,20 @@ class Bot:
             if self._rec.is_set():
                 self._rec.clear()
                 self._save_recording()
+            if self._reset.is_set():
+                self._reset.clear()
+                self.learner.reset()
+                if self.runner is not None:
+                    self.runner.planner.room = self.learner.room
+                self.on_event("learned", self.learner.summary())
+                self.on_event("log", "Learning reset: starting from scratch.")
             if self._start.is_set():
                 self._start.clear()
                 self._stop.clear()
                 if not self.running:
                     io = WindowsIO(self.settings["require_focus"])
-                    self.runner = BotRunner(io, self.settings["auto_restart"], log=lambda t: self.on_event("log", t))
+                    self.runner = BotRunner(io, self.settings["auto_restart"], log=lambda t: self.on_event("log", t),
+                                            learner=self.learner)
                     self.running = True
                     last_status = None
                     self.on_event("log", "Started.")
@@ -112,7 +130,9 @@ class Bot:
                 self._stop.clear()
                 if self.running:
                     self.running = False
+                    self.runner._end_run("stopped")
                     io.close()
+                    self.on_event("learned", self.learner.summary())
                     self.on_event("status", "Stopped")
                     self.on_event("log", "Stopped.")
             if not self.running:
@@ -126,6 +146,24 @@ class Bot:
                 io.close()
                 self.on_event("status", "Error")
                 self.on_event("log", f"Error, stopped: {e!r}")
+                continue
+            while self.runner.events:
+                kind, cause = self.runner.events.pop(0)
+                if kind == "hit":
+                    self.pending_clips.append((time.perf_counter() + 1.5, cause))
+            if self.pending_clips and time.perf_counter() >= self.pending_clips[0][0]:
+                _, cause = self.pending_clips.pop(0)
+                self._save_recording(folder=os.path.join(HITS, f"hit_{time.strftime('%Y%m%d_%H%M%S')}_{cause}"),
+                                     quiet=True)
+            if status in ("dead", "lost", "playing", "restarting") and self.runner.run_over and \
+                    getattr(self, "_shown_runs", None) != len(self.learner.runs):
+                self._shown_runs = len(self.learner.runs)
+                self.on_event("learned", self.learner.summary())
+            if status == "lost":
+                self._save_picture()
+                self.running = False
+                io.close()
+                self.on_event("status", "Stopped (not in the game)")
                 continue
             if status == "dead":
                 self.running = False
@@ -152,6 +190,8 @@ class Bot:
                               (f", speed {r.player_speed:.0f}" if r.player_speed else ""))
                 frames, fps_t = 0, time.perf_counter()
         if io is not None:
+            if self.running:
+                self.runner._end_run("stopped")
             io.close()
 
     # ------------------------------------------------------------------ pictures
@@ -178,16 +218,26 @@ class Bot:
         cv2.imwrite(base + "_bot.png", pic)
         self.on_event("log", f"Screenshot saved: {os.path.basename(base)}.png (+ _bot.png)")
 
-    def _save_recording(self):
-        import cv2
-        import numpy as np
+    def _save_recording(self, folder=None, quiet=False):
+        """Saves the last 8 s (on its own thread, so the bot doesn't stall)."""
         r = self.runner
         if r is None or not r.recording:
-            self.on_event("log", "Nothing recorded yet (it records while running).")
+            if not quiet:
+                self.on_event("log", "Nothing recorded yet (it records while running).")
             return
         items = list(r.recording)
-        folder = os.path.join(PICTURES, "rec_" + time.strftime("%Y%m%d_%H%M%S"))
+        folder = folder or os.path.join(PICTURES, "rec_" + time.strftime("%Y%m%d_%H%M%S"))
+        threading.Thread(target=self._write_recording, args=(items, folder, quiet), daemon=True).start()
+
+    def _write_recording(self, items, folder, quiet):
+        import cv2
+        import numpy as np
+        import shutil
         os.makedirs(folder, exist_ok=True)
+        if quiet:  # hit clips: keep only the newest ones
+            old = sorted(d for d in os.listdir(HITS) if d.startswith("hit_"))
+            for d in old[:-HIT_CLIPS_KEPT]:
+                shutil.rmtree(os.path.join(HITS, d), ignore_errors=True)
         log = []
         for i, (t, jpg, info) in enumerate(items):
             img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
@@ -207,6 +257,8 @@ class Bot:
             log.append(info)
         with open(os.path.join(folder, "log.json"), "w") as f:
             json.dump(log, f)
+        if quiet:
+            return
         self.on_event("log", f"Saved the last {items[-1][0] - items[0][0]:.0f} s: pictures/{os.path.basename(folder)} "
                              "(zip that folder and send it).")
 
@@ -267,7 +319,11 @@ class App:
         row2.pack(fill="x")
         ttk.Button(row2, text="Screenshot  ( / )", command=self.bot.snapshot).pack(side="left", padx=(0, 6))
         ttk.Button(row2, text="Save last 8 s  ( + )", command=self.bot.save_recording).pack(side="left", padx=(0, 6))
-        ttk.Button(row2, text="Open folder", command=self.open_folder).pack(side="left")
+        ttk.Button(row2, text="Open folder", command=self.open_folder).pack(side="left", padx=(0, 6))
+        ttk.Button(row2, text="Reset learning", command=self.reset_learning).pack(side="left")
+        self.learned = tk.StringVar(value="Learned: " + self.bot.learner.summary())
+        tk.Label(wrap, textvariable=self.learned, bg=BG, fg=MUTED, font=FONT, wraplength=560, justify="left"
+                 ).pack(anchor="w", pady=(8, 0))
 
         self.log = tk.Text(wrap, height=10, width=74, bg=PANEL, fg=FG, font=MONO, relief="flat",
                            highlightbackground=LINE, highlightthickness=1, wrap="word")
@@ -280,6 +336,11 @@ class App:
         self.bot.settings.update(auto_restart=bool(self.auto.get()), require_focus=bool(self.focus.get()))
         save_settings(self.bot.settings)
 
+    def reset_learning(self):
+        from tkinter import messagebox
+        if messagebox.askyesno("Swarm Bot", "Forget everything it learned (room to keep, speeds, run list)?"):
+            self.bot.reset_learning()
+
     def open_folder(self):
         os.makedirs(PICTURES, exist_ok=True)
         if os.name == "nt":
@@ -289,6 +350,8 @@ class App:
 
     def write(self, text):
         self.log.insert("end", time.strftime("%H:%M:%S  ") + text + "\n")
+        if int(self.log.index("end-1c").split(".")[0]) > 3000:  # running all night: keep the newest lines
+            self.log.delete("1.0", "1000.0")
         self.log.see("end")
 
     def poll(self):
@@ -306,6 +369,8 @@ class App:
                     self.fps.set("")
             elif kind == "fps":
                 self.fps.set(text)
+            elif kind == "learned":
+                self.learned.set("Learned: " + text)
             else:
                 self.write(text)
         self.root.after(50, self.poll)

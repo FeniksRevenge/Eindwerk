@@ -24,6 +24,27 @@ It keeps its settings (`config.json`) and pictures (`pictures/`) next to itself.
 
 It only presses keys while the Roblox window is in front (setting), and it takes over your mouse while running.
 
+## Overnight: it gets better run after run
+Turn on **Auto restart**, start a run and press `*`. It keeps playing game after game, and it learns
+(remembered in `learned.json` next to the app; **Reset learning** forgets it):
+- **What hit you:** it reads your HP bar; when it drops it looks at what was closest and keeps a bit more
+  room from that kind of enemy (going back to normal when that kind stops hitting you).
+- **How fast things are:** enemy and bullet speeds are measured every run, so new enemies are predicted
+  right from the start.
+- **Play style, by trying:** after a few normal runs it tries a small change (more/less room from bullets
+  or enemies, staying further from walls, running more or fewer laps, avoiding crowds more) for 4 runs and
+  keeps it only if those runs lasted clearly longer. Runs differ a lot, so this is slow: think ~10 tries a
+  night, and a lucky streak can fool it now and then.
+- The window shows the runs so far (average of the last 10, best) and what it's trying.
+
+While it runs, Windows won't sleep or turn the screen off. Every hit is saved as a short clip in
+`pictures/hits/` (the newest 40): zip that folder and `learned.json` and send them, that's how the bot
+gets better the most.
+
+**If you get disconnected or kicked:** it doesn't try to get back to the arcade. When it hasn't seen you or
+a GAME OVER screen for 90 s, or the picture hasn't changed for 45 s, or the Roblox window is gone, it lets
+go of all keys, saves a screenshot, writes the time in the log and stops.
+
 **Windows HDR:** the fast screen capture (dxcam) gets wrong colors while HDR is on, so when you start the bot it
 turns HDR off (the screen flickers once) and turns it back on when you stop the bot or close the app.
 
@@ -37,6 +58,7 @@ turns HDR off (the screen flickers once) and turns it back on when you stop the 
   at you; grunts a bit slower than you, tiny tanks faster, tanks/yellow slower, the boss can rush) and picks
   the plan that never gets hit and keeps the most room, away from walls, corners and crowds. Aims at yellow
   mobs first, then orange shooters, then whatever is closing in, ahead of where they're going.
+- `learn.py`: what it learns between runs (see above).
 - `runner.py`: the loop; measures your speed and the game's input delay while playing and plans from where
   you'll really be when its keys land. GAME OVER screen and auto restart.
 - `tests/fakegame.py`: a fake version of the game built from screenshot pieces, with the real rules, used to

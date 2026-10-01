@@ -386,6 +386,66 @@ def find_rings(bgr, lab, centers, ball_r):
 
 
 # --------------------------------------------------------------------------- GAME OVER screen
+class HPBar:
+    """Reads your HP (0..1) from the HP bar at the top left: a dark red fill, a gray empty part, then the
+    background. The panel is see-through, so an enemy behind it can tint part of it: the fill must have
+    the bar's own color, and the bar's full length is remembered from clean readings. While the screen
+    flashes red after a hit it reads as full: only trust a value that stays the same for a few pictures."""
+
+    def __init__(self):
+        self.extent = None   # (picture shape, x where the bar starts, x where it ends)
+
+    def read(self, bgr):
+        H, W = bgr.shape[:2]
+        reg = bgr[int(0.015 * H):int(0.15 * H), int(0.005 * W):int(0.30 * W)].astype(np.int16)
+        b, g, r = reg[..., 0], reg[..., 1], reg[..., 2]
+        red = (r > 32) & (r < 110) & (r > b + 15) & (r > g + 15)
+        rows = red.mean(1)
+        if rows.max() < 0.03:
+            return None
+        ys = np.flatnonzero(rows > 0.5 * rows.max())
+        y0, y1 = ys[0], ys[-1] + 1
+        if y1 - y0 < 0.02 * H:
+            return None
+        med = np.median(reg[y0:y1], axis=0)  # one color per column
+        mb, mg, mr = med[:, 0], med[:, 1], med[:, 2]
+        reddish = (mr > 32) & (mr > mb + 12) & (mr > mg + 12)
+        xs = np.flatnonzero(reddish)
+        if not len(xs):
+            return None
+        n = len(med)
+        gap = max(3, int(0.04 * n))  # the "8 / 10" text breaks the colors up a little
+        x0 = xs[0]
+        ref = np.median(med[x0:x0 + gap], axis=0)
+        fill = reddish & (np.abs(med - ref).max(1) < 14)  # the bar's own red, not an enemy behind it
+        empty = ~reddish & (mg >= 9) & (mr >= 9) & (med.max(1) < 40)
+        outside = (med.max(1) < 13) & (mg < 9)
+        xf = x0
+        for x in range(x0 + 1, n):
+            if x - xf > gap:
+                break
+            if fill[x]:
+                xf = x
+        end = xf
+        for x in range(xf + 1, n):
+            if x - end > gap:
+                break
+            if empty[x]:
+                end = x
+        clean = end + 1 + gap <= n and outside[end + 1:end + 1 + gap].all()
+        key = (H, W, x0)
+        if clean:
+            self.extent = (key, end + 1)
+        if self.extent is not None and self.extent[0] == key:
+            return min(1.0, float(xf + 1 - x0) / (self.extent[1] - x0))
+        return float(xf + 1 - x0) / (end + 1 - x0) if clean else None
+
+
+def read_hp(bgr):
+    """One-off HP reading (see HPBar)."""
+    return HPBar().read(bgr)
+
+
 def game_over_info(bgr):
     """Median BGR of the screen edges and of the middle, and whether that's the GAME OVER screen
     (dark red background with a dark gray panel in the middle)."""

@@ -3,3 +3,5 @@ __pycache__/
 pictures/
 selftest.txt
 *.mp4
+learned.json
+learned.json.tmp

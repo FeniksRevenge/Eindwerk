@@ -13,22 +13,30 @@ import time
 import cv2
 import numpy as np
 
-from planner import Planner
+from planner import MOB_SPEED, Planner
 from tracker import Tracker
-from vision import REF_H, Detector, annotate, find_play_again, game_over_info, is_game_over
+from vision import REF_H, Detector, annotate, find_play_again, game_over_info, is_game_over, HPBar
 
 HOLD_MAX = 15.0       # seconds it may keep you at a spot by your picture alone
 RECORD_SECONDS = 8.0  # how much the "record" key saves
+LOST_STILL = 45.0     # the picture hasn't changed for this long: frozen / disconnected
+LOST_MISSING = 90.0   # you've been gone this long without a GAME OVER screen: not in the game anymore
+LOST_WAITING = 150.0  # after an auto restart, no new game within this long
+LOST_NO_WINDOW = 60.0
 
 
 class BotRunner:
-    def __init__(self, io, auto_restart=False, log=lambda text: None):
+    def __init__(self, io, auto_restart=False, log=lambda text: None, learner=None):
         self.io = io
         self.auto_restart = auto_restart
         self.log = log
+        self.learner = learner
+        self.events = []      # ("hit", cause) for the app (it saves a clip of every hit)
         self.detector = Detector()
         self.planner = Planner()
         self.recording = collections.deque()
+        self.after_restart = None   # when the last auto restart click worked
+        self.no_window_since = None
         self.reset_run()
         self.input_delay = 0.08   # seconds from sending keys until you visibly move (measured while playing)
         self.player_speed = None  # pixels per second (measured while playing)
@@ -50,6 +58,16 @@ class BotRunner:
         self.restart = None   # auto restart in progress: {"since", "clicks", "last_click"}
         self.started = self.first_seen = self.last_seen = None
         self.last = None      # everything from the latest step (screenshots, recordings)
+        self.hp = None        # last trusted HP reading (0..1)
+        self.hp_reads = []
+        self.hp_bar = HPBar()
+        self.history = collections.deque()   # (t, (x, y, R), things) of the last second, to see what hit you
+        self.still = (None, 0.0, 0.0)          # (small picture, when, how long it hasn't changed)
+        self.run_over = False
+        if self.learner is not None:
+            self.planner.room = self.learner.room
+            self.planner.mob_speed = dict(MOB_SPEED, **self.learner.speed)
+            self.planner.style = self.learner.current_style()
 
     def run_seconds(self):
         return 0.0 if self.first_seen is None else self.last_seen - self.first_seen
@@ -67,16 +85,24 @@ class BotRunner:
         self.ms = {"grab": round(1000 * (time.perf_counter() - t0), 1)}
         if frame is None:
             self.release()
+            if self.no_window_since is None:
+                self.no_window_since = now
+            if now - self.no_window_since > LOST_NO_WINDOW and (self.seen or self.after_restart):
+                return self._lost(f"the Roblox window was gone for {LOST_NO_WINDOW:.0f} s")
             return "no_window"
+        self.no_window_since = None
         t_grab = getattr(self.io, "frame_time", 0.0) or now
         dt = 1 / 30 if self.last_t is None else max(1e-3, min(0.2, now - self.last_t))
         self.last_t = now
         if self.started is None:
             self.started = now
         H, W = frame.shape[:2]
+        if (self.seen or self.after_restart) and self._frozen(frame, now):
+            return self._lost(f"the picture hasn't changed for {LOST_STILL:.0f} s")
 
         # --- game over / auto restart
         if is_game_over(frame):
+            self._end_run("game over")
             self.release()
             self.last = {"frame": frame, "player": None, "things": [], "keys": (), "aim": None, "t": t_grab,
                          "note": "GAME OVER screen"}
@@ -96,7 +122,10 @@ class BotRunner:
             secs = self.restart["secs"]
             self.reset_run()
             self.started = now
+            self.after_restart = now
             self.log(f"Auto restart: new game started (last one lasted {secs:.0f} s).")
+        if not self.seen and self.after_restart is not None and now - self.after_restart > LOST_WAITING:
+            return self._lost(f"no new game {LOST_WAITING:.0f} s after clicking PLAY AGAIN")
 
         t1 = time.perf_counter()
         player, things = self.detector.detect(frame)
@@ -110,6 +139,8 @@ class BotRunner:
             self.last = {"frame": frame, "player": None, "things": things, "keys": self.keys, "aim": None,
                          "t": t_grab, "note": "can't see you"}
             self._record()
+            if self.seen and self.missing > LOST_MISSING:
+                return self._lost(f"you weren't visible for {LOST_MISSING:.0f} s and there was no GAME OVER screen")
             if self.player is None or self.missing > 1.0:
                 if self.seen:
                     self.release()  # don't run blindly into things
@@ -138,7 +169,11 @@ class BotRunner:
             self.next_delay_check = now + 0.5
             self._measure_input_delay(V, R, W, H)
 
-        tracks = self.tracker.update(things, dt, (x, y), max_move=1.6 * H, new_bullet_speed=0.6 * H)
+        bs = (self.learner.bullet_speed if self.learner is not None else None) or 0.6
+        tracks = self.tracker.update(things, dt, (x, y), max_move=1.6 * H, new_bullet_speed=bs * H)
+        self._watch_hp(frame, now, (x, y, R), things)
+        if self.learner is not None:
+            self.learner.played(dt, tracks, V, H)
         # where you'll be when new keys take effect: the screenshot shows the keys from input_delay ago,
         # the keys sent since then are still on their way
         lat = min(0.45, self.latency + self.input_delay)
@@ -163,6 +198,72 @@ class BotRunner:
         self.io.fire(True)
         self.latency = 0.8 * self.latency + 0.2 * max(0.0, self.io.now() - t_grab)
         return "playing"
+
+    # ------------------------------------------------------------------ learning, and noticing trouble
+    def _watch_hp(self, frame, now, me, things):
+        """Reads the HP bar; when it drops, works out what hit you (the closest thing just before)."""
+        self.history.append((now, me, [(th.kind, th.x, th.y, th.r) for th in things]))
+        while self.history and now - self.history[0][0] > 1.0:
+            self.history.popleft()
+        small = frame[::16, ::16]
+        if np.median(small[..., 2]) > max(30, 2 * np.median(small[..., 0])):
+            self.hp_reads = []  # the screen flashes red right after a hit: the bar can't be read
+            return
+        v = self.hp_bar.read(frame[::2, ::2])
+        if v is None:
+            return
+        self.hp_reads = (self.hp_reads + [v])[-4:]
+        if len(self.hp_reads) < 4 or max(self.hp_reads) - min(self.hp_reads) > 0.03:
+            return
+        v = sum(self.hp_reads) / 4
+        if self.hp is not None and v < self.hp - 0.05:
+            cause = self._what_hit(now)
+            self.events.append(("hit", cause))
+            if self.learner is not None:
+                self.learner.hit(cause)
+            self.log(f"Hit by {cause} (HP {10 * v:.0f}/10).")
+        self.hp = v
+
+    def _what_hit(self, now):
+        best, cause = None, "unknown"
+        for t, (x, y, R), things in self.history:
+            if now - t > 0.8:
+                continue
+            for kind, tx, ty, tr in things:
+                if kind in ("health", "spawn"):
+                    continue
+                g = (math.hypot(tx - x, ty - y) - 1.2 * R - tr) / R
+                if best is None or g < best:
+                    best, cause = g, kind
+        return cause if best is not None and best < 2.5 else "unknown"
+
+    def _frozen(self, frame, now):
+        pic, t, still = self.still
+        if t and now - t < 1.0:
+            return False
+        tiny = cv2.resize(cv2.cvtColor(frame[::4, ::4], cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA)
+        if pic is not None and float(np.abs(tiny.astype(np.int16) - pic).mean()) < 1.0:
+            still += now - t
+        else:
+            still = 0.0
+        self.still = (tiny.astype(np.int16), now, still)
+        return still > LOST_STILL
+
+    def _lost(self, why):
+        self.release()
+        self._end_run("lost")
+        self.log(f"Not in the game anymore at {time.strftime('%H:%M')} ({why}; disconnected or kicked?). Stopped.")
+        return "lost"
+
+    def _end_run(self, how):
+        if self.run_over or not self.seen:
+            return
+        self.run_over = True
+        if self.learner is not None:
+            run = self.learner.end_run(how)
+            if run is not None:
+                self.log(f"Run: {run['secs'] // 60}:{run['secs'] % 60:02d}, {run['hits']} hits "
+                         f"{run['causes'] or ''}. Learned: {self.learner.summary()}")
 
     def _auto_restart(self, frame, now):
         r = self.restart

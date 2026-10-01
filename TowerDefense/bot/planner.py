@@ -68,6 +68,9 @@ class Planner:
 
     def __init__(self):
         self.prev = 0
+        self.room = {}                    # learned: extra room per kind ("bullet", "grunt", ...), x normal
+        self.mob_speed = dict(MOB_SPEED)  # learned: walking speed per kind as a fraction of yours
+        self.style = {}                   # learned play style: bullet_room, mob_room, walls, laps, crowd (x1)
 
     def plan(self, me, speed, tracks, W, H, latency=0.0, start=None):
         """me = (x, y, R): where you are now and your danger radius. start = where you will be when new
@@ -112,7 +115,8 @@ class Planner:
         if bullets:
             b = np.array([[t.x, t.y, t.vx, t.vy, t.r] for t in bullets])
             far = np.hypot(b[:, 0] - p0[0], b[:, 1] - p0[1]) - np.hypot(b[:, 2], b[:, 3]) * (T[-1] + latency) - reach - b[:, 4]
-            b = b[far < self.BULLET_MARGIN * R]
+            bm = self.BULLET_MARGIN * self.room.get("bullet", 1.0) * self.style.get("bullet_room", 1.0)
+            b = b[far < bm * R]
             if len(b):
                 bp = b[None, :, :2] + b[None, :, 2:4] * (T + latency)[:, None, None]       # (16, B, 2)
                 D = body[:, :, None, :] - bp[None]                                         # (81, 16, B, 2)
@@ -120,7 +124,7 @@ class Planner:
                 u = np.clip(-(A * seg).sum(-1) / ((seg * seg).sum(-1) + 1e-9), 0, 1)
                 closest = A + u[..., None] * seg
                 gap = np.sqrt((closest ** 2).sum(-1)) - size(closest) - b[None, None, :, 4]  # (81, 15, B)
-                m = self.BULLET_MARGIN * R
+                m = bm * R
                 wt = w[1:][None, :, None]
                 cost += (np.where(gap < 0, HIT_BULLET, 0.0) * wt).sum(axis=(1, 2))
                 near = np.clip((m - gap) / m, 0, 1) ** 2 * self.NEAR_BULLET
@@ -132,11 +136,13 @@ class Planner:
             mv = np.array([[t.vx, t.vy] for t in mobs])
             mr = np.array([t.r for t in mobs])
             # (the boss walks slowly; its sudden charges are covered by keeping a big distance)
-            spd = np.array([max(t.speed if t.age >= 3 else 0.0, MOB_SPEED[t.kind] * V * (0.8 if t.age >= 3 else 1.0))
-                            if t.kind != "boss" else max(t.speed if t.age >= 3 else 0.0, MOB_SPEED["boss"] * V)
+            ms = self.mob_speed
+            spd = np.array([max(t.speed if t.age >= 3 else 0.0, ms[t.kind] * V * (0.8 if t.age >= 3 else 1.0))
+                            if t.kind != "boss" else max(t.speed if t.age >= 3 else 0.0, ms["boss"] * V)
                             for t in mobs])
             chase = np.array([t.kind in CHASERS for t in mobs])
-            margin = np.array([MARGIN[t.kind] for t in mobs]) * R
+            margin = np.array([MARGIN[t.kind] * self.room.get(t.kind, 1.0) for t in mobs]) * R * \
+                self.style.get("mob_room", 1.0)
             tt = (T + latency)[None, :, None]                                              # (1, 16, 1)
             diff = P[:, :, None, :] - mp[None, None]                                       # (81, 16, M, 2)
             dist = np.sqrt((diff ** 2).sum(-1)) + 1e-6
@@ -153,7 +159,8 @@ class Planner:
             end = P[:, -1, :]
             g_end = np.sqrt(((end[:, None, :] - mp[None]) ** 2).sum(-1)) - mr[None]
             wk = np.array([CROWD[t.kind] for t in mobs])
-            cost += (wk[None] * 4 * R / np.maximum(g_end, R / 2)).sum(-1) * self.CROWD_WEIGHT
+            cost += (wk[None] * 4 * R / np.maximum(g_end, R / 2)).sum(-1) * self.CROWD_WEIGHT * \
+                self.style.get("crowd", 1.0)
 
         # --- don't stand where an enemy is about to appear
         if spawns:
@@ -164,13 +171,14 @@ class Planner:
 
         # --- walls and corners (each edge counts, so corners count twice), and a pull to the middle
         end = P[:, -1, :]
+        walls = self.style.get("walls", 1.0)
         for d in (end[:, 0], W - end[:, 0], end[:, 1], H - end[:, 1]):
-            cost += np.clip((self.WALL * R - d) / (self.WALL * R), 0, 1) ** 2 * self.WALL_WEIGHT
+            cost += np.clip((self.WALL * R - d) / (self.WALL * R), 0, 1) ** 2 * self.WALL_WEIGHT * walls
         # corners trap you: extra cost when close to two edges at once
         C = 0.25 * min(W, H)
         near_x = np.clip((C - np.minimum(end[:, 0], W - end[:, 0])) / C, 0, 1)
         near_y = np.clip((C - np.minimum(end[:, 1], H - end[:, 1])) / C, 0, 1)
-        cost += near_x * near_y * self.CORNER_WEIGHT
+        cost += near_x * near_y * self.CORNER_WEIGHT * walls
         cdist = np.hypot(end[:, 0] - W / 2, end[:, 1] - H / 2) / (0.5 * min(W, H))
         cost += cdist ** 2 * self.CENTER_WEIGHT
 
@@ -198,6 +206,7 @@ class Planner:
             lap = self.LAP_WEIGHT
             pref0 = self._lap_dir(p0, W, H)
             pref1 = np.array([self._lap_dir(e, W, H) for e in end1])                    # (9, 2)
+        lap *= self.style.get("laps", 1.0)
         first = np.repeat(np.arange(9), 9)
         second = np.tile(np.arange(9), 9)
         cost += (1 - DIRS[first] @ pref0) * lap
