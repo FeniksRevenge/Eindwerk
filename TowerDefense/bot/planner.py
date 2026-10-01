@@ -33,6 +33,7 @@ BOSS_KEEP = 0.33    # distance to keep from the boss, as a fraction of the arena
 MARGIN = {"grunt": 1.3, "tiny": 1.3, "tank": 3.0, "yellow": 1.6, "shooter": 1.3, "boss": 6.0}
 CROWD = {"grunt": 1.0, "tiny": 1.2, "tank": 1.2, "yellow": 2.0, "shooter": 1.3, "boss": 3.0}
 # Which mob to shoot first (bigger = sooner): yellow mobs, then orange shooters.
+SPAWN_PRIORITY = 1.1   # prefire at warning rings: before tanks/boss, after things already closing in
 AIM_PRIORITY = {"yellow": 3.0, "shooter": 2.0, "tiny": 1.4, "grunt": 1.3, "tank": 1.0, "boss": 1.0}
 
 HIT_BULLET = 1e6
@@ -47,6 +48,7 @@ class Planner:
     WALL = 6.0            # x R from an edge where it starts to cost
     WALL_WEIGHT = 900.0
     CORNER_WEIGHT = 3000.0
+    SPAWN_WEIGHT = 800.0
     LAP_WEIGHT = 150.0    # how much it likes running laps around the middle (x2 with the boss there)
     CENTER_WEIGHT = 60.0
     HEALTH_BONUS = 3000.0
@@ -80,6 +82,7 @@ class Planner:
         bullets = [t for t in tracks if t.kind == "bullet"]
         mobs = [t for t in tracks if t.kind in MOB_SPEED]
         health = [t for t in tracks if t.kind == "health"]
+        spawns = [t for t in tracks if t.kind == "spawn"]
         reach = V * T[-1] + R
 
         # --- bullets: closest approach during every step (a fast bullet can't slip between checks)
@@ -128,6 +131,13 @@ class Planner:
             wk = np.array([CROWD[t.kind] for t in mobs])
             cost += (wk[None] * 4 * R / np.maximum(g_end, R / 2)).sum(-1) * self.CROWD_WEIGHT
 
+        # --- don't stand where an enemy is about to appear
+        if spawns:
+            sp = np.array([[t.x, t.y, t.r] for t in spawns])
+            end = P[:, -1, :]
+            d = np.sqrt(((end[:, None, :] - sp[None, :, :2]) ** 2).sum(-1))
+            cost += (np.clip((sp[None, :, 2] * 0.8 + 2 * R - d) / (sp[None, :, 2] * 0.8 + 2 * R), 0, 1) ** 2).sum(-1) * self.SPAWN_WEIGHT
+
         # --- walls and corners (each edge counts, so corners count twice), and a pull to the middle
         end = P[:, -1, :]
         for d in (end[:, 0], W - end[:, 0], end[:, 1], H - end[:, 1]):
@@ -166,7 +176,7 @@ class Planner:
         cost += np.where(first != self.prev, self.TURN_COST, 0.0)
         best = int(np.argmin(cost))
         self.prev = int(first[best])
-        return KEYS[self.prev], self.aim(x, y, R, V, mobs)
+        return KEYS[self.prev], self.aim(x, y, R, V, mobs, spawns)
 
     def _lap_dir(self, p, W, H):
         """Direction of a lap around the middle (an ellipse at 1/3 of the arena), steering back onto it."""
@@ -190,9 +200,14 @@ class Planner:
         v = tangent + 1.2 * radial * away + 0.6 * mid
         return v / (np.linalg.norm(v) or 1.0)
 
-    def aim(self, x, y, R, V, mobs):
-        """Yellow mobs first, then orange shooters, then whatever is closing in; aimed ahead of it."""
+    def aim(self, x, y, R, V, mobs, spawns=()):
+        """Yellow mobs first, then orange shooters, then whatever is closing in; aimed ahead of it.
+        Prefire: with nothing more urgent, shoot at a warning ring so the enemy is hit as it appears."""
         target, best = None, math.inf
+        for t in spawns:
+            score = math.hypot(t.x - x, t.y - y) / SPAWN_PRIORITY
+            if score < best:
+                target, best = t, score
         for t in mobs:
             prio = AIM_PRIORITY[t.kind]
             if t.kind == "tank" and math.hypot(t.x - x, t.y - y) < 8 * R:

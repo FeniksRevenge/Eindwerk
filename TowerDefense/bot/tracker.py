@@ -4,7 +4,7 @@ Following things from one screenshot to the next, to know where each one is goin
 
 import math
 
-KINDS = ("bullet", "grunt", "shooter", "yellow", "tank", "tiny", "boss", "health")
+KINDS = ("bullet", "grunt", "shooter", "yellow", "tank", "tiny", "boss", "health", "spawn")
 
 
 class Track:

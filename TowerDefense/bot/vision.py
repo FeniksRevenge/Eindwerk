@@ -225,6 +225,7 @@ class Detector:
             if any(o is not t and o.r > t.r and math.hypot(o.x - t.x, o.y - t.y) < o.r for o in hp):
                 things.remove(t)
 
+        things += find_spawn_rings(bgr, things)
         player = find_player(bl, k, things)
         # enemies flash white when hit: a white shape without your gray ball next to it is one of them
         for b in bl["white"]:
@@ -302,6 +303,42 @@ def find_player(bl, k, things):
                 best = (2, b.x, b.y, HIT_FACTOR * b.r)
                 break
     return None if best is None else best[1:]
+
+
+# --------------------------------------------------------------------------- spawn warnings
+def find_spawn_rings(bgr, things):
+    """The thin colored warning rings the game draws where an enemy is about to appear: [Thing("spawn")].
+    Big (r > 5% of the height), thin, round (or cut off by the edge), and nothing inside yet."""
+    H, W = bgr.shape[:2]
+    s = 4
+    small = cv2.resize(bgr, (W // s, H // s), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    hue = hsv[..., 0]
+    mask = ((hsv[..., 1] > 90) & (hsv[..., 2] > 45) & ~((hue > 80) & (hue < 100))).astype(np.uint8)
+    n, _, st, cc = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    out = []
+    for i in range(1, n):
+        x0, y0, w, h, area = (int(v) for v in st[i])
+        r = max(w, h) / 2.0 * s
+        if r < 0.05 * H or r > 0.25 * H or area > 0.22 * w * h:
+            continue
+        edge = x0 <= 1 or y0 <= 1 or x0 + w >= small.shape[1] - 1 or y0 + h >= small.shape[0] - 1
+        if not edge and not (0.7 <= w / h <= 1.4):
+            continue
+        cx, cy = (x0 + w / 2.0) * s, (y0 + h / 2.0) * s
+        if edge:  # cut off by the edge: the center is where the full circle's would be
+            if x0 <= 1:
+                cx = (x0 + w) * s - r
+            elif x0 + w >= small.shape[1] - 1:
+                cx = x0 * s + r
+            if y0 <= 1:
+                cy = (y0 + h) * s - r
+            elif y0 + h >= small.shape[0] - 1:
+                cy = y0 * s + r
+        if any(math.hypot(t.x - cx, t.y - cy) < 0.6 * r for t in things if t.kind != "bullet"):
+            continue  # something is already there (a shooter's or yellow mob's own ring)
+        out.append(Thing("spawn", cx, cy, r))
+    return out
 
 
 # --------------------------------------------------------------------------- rings (shooter, yellow)
@@ -399,7 +436,7 @@ def find_play_again(bgr):
 
 
 # --------------------------------------------------------------------------- pictures for debugging
-DRAW = {"bullet": (80, 80, 255), "grunt": (60, 60, 230), "shooter": (50, 150, 255), "yellow": (90, 220, 230),
+DRAW = {"spawn": (255, 0, 255), "bullet": (80, 80, 255), "grunt": (60, 60, 230), "shooter": (50, 150, 255), "yellow": (90, 220, 230),
         "tank": (230, 90, 200), "tiny": (240, 160, 240), "boss": (0, 0, 255), "health": (120, 230, 120)}
 
 
