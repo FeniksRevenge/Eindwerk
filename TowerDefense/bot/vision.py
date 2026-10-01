@@ -353,6 +353,12 @@ class Detector:
         for name, p in PRESET["colors"].items():
             if not (colors.get(name) and colors[name].get("lab")):
                 colors[name] = {"lab": list(p["lab"]), "radius": round(p["radius"] * scale, 1)}
+        # An ignore entry can't hide a real kind of thing: one that matches a known kind's color and size
+        # (e.g. a bullet once marked "not a thing" in the photo trainer) is not applied.
+        tol_h = np.array(self.tol) * 0.5
+        self.ignore = [ig for ig in self.ignore if not any(
+            np.all(np.abs(np.array(ig["lab"]) - np.array(c["lab"])) <= tol_h) and 0.75 <= ig["radius"] / float(c["radius"]) <= 1.33
+            for c in colors.values() if c and c.get("lab") and float(c.get("radius", 0)) > 0)]
         for name, c in colors.items():
             if not (c and c.get("lab") and float(c.get("radius", 0)) > 0):
                 continue

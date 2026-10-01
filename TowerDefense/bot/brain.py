@@ -16,7 +16,7 @@ import numpy as np
 REF_R = 13.0
 # Bump when the dodging logic changes enough that settings trained for the old one don't fit anymore:
 # saved training ("brain_params") from another version is then ignored.
-BRAIN_VERSION = 2
+BRAIN_VERSION = 3
 S = math.sqrt(0.5)
 DIRS = np.array([[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [S, S], [S, -S], [-S, S], [-S, -S]])
 DIR_KEYS = [(), ("d",), ("a",), ("s",), ("w",), ("s", "d"), ("w", "d"), ("s", "a"), ("w", "a")]
@@ -39,6 +39,8 @@ class Brain:
     WALL_MARGIN = 140
     WALL_WEIGHT = 0.35
     ORBIT_WEIGHT = 150
+    HEALTH_PULL = 2000    # how strongly it heads for a green health circle
+    HEALTH_REWARD = 30000  # how much picking one up on the way is worth (+2 HP; a hit costs 1e6)
     EDGE_MARGIN = 190     # distance from each edge where moving on costs extra (corners count twice)
     EDGE_WEIGHT = 0.25
     BOSS_AWAY = 0.35      # boss nearby: mostly circle around it, only a little straight away from it
@@ -68,7 +70,7 @@ class Brain:
     BULLET_HIT = 1e6   # getting hit costs far more than any "too close" penalty (boss distance included)
     MOB_HIT = 3e5
 
-    def _leg(self, start, t0, steps, speed, W, H, pr, mobs, bullets, latency=0.0):
+    def _leg(self, start, t0, steps, speed, W, H, pr, mobs, bullets, latency=0.0, health=None):
         """Danger of running straight in each of the 9 directions from each start point.
         start: (N, 2). Returns cost (N, 9) and end points (N, 9, 2)."""
         P = start[:, None, None, :] + DIRS[None, :, None, :] * speed * steps[None, None, :, None]
@@ -110,6 +112,11 @@ class Brain:
             near = (m - np.maximum(gap, 0)) ** 2 * 1.5
             c = np.where(gap < 0, self.MOB_HIT, np.where(gap < m, near, 0.0))
             cost += (c * urg).sum(axis=(2, 3))
+        if health is not None and len(health["pos"]):
+            # Walking over a green health circle on the way is worth a lot (+2 HP).
+            hd = P[:, :, :, None, :] - health["pos"]                                     # (N, 9, S, K, 2)
+            got = (hd[..., 0] ** 2 + hd[..., 1] ** 2 < (pr + health["r"]) ** 2).any(axis=2)  # (N, 9, K)
+            cost -= (got * self.HEALTH_REWARD).sum(axis=-1)
         # Edges and corners along the way: each edge adds its own penalty, so corners cost double.
         ex = np.maximum(0, self.EDGE_MARGIN - np.minimum(P[..., 0], W - P[..., 0]))
         ey = np.maximum(0, self.EDGE_MARGIN - np.minimum(P[..., 1], H - P[..., 1]))
@@ -180,13 +187,16 @@ class Brain:
             pref = tangent + self.BOSS_AWAY * away + self.BOSS_CENTER * center
             pref /= np.linalg.norm(pref) or 1
             pull = self.ORBIT_WEIGHT * 2
-        elif pickups:
-            # Go get the nearest green health circle; the danger checks still keep it safe on the way.
-            hp = min(pickups, key=lambda t: math.hypot(t.x - px, t.y - py))
+        # Green health circles: go get the nearest one (also during a boss fight, unless it's right next
+        # to the boss). The danger checks still keep the way there safe.
+        safe = [t for t in pickups if boss is None or
+                math.hypot(t.x - boss.x, t.y - boss.y) / k > boss.r / k + 150]
+        if safe:
+            hp = min(safe, key=lambda t: math.hypot(t.x - px, t.y - py))
             to = np.array([hp.x / k - p[0], hp.y / k - p[1]])
             if np.linalg.norm(to) > 1:
                 pref = to / np.linalg.norm(to)
-                pull = self.ORBIT_WEIGHT * 3
+                pull = self.HEALTH_PULL
 
         # During the reaction delay the player keeps moving with the keys we're still holding,
         # so plan from where it will be when the new keys land, not from where it is now.
@@ -207,8 +217,10 @@ class Brain:
             vm = np.maximum(mobs["speed"], np.hypot(mobs["vel"][:, 0], mobs["vel"][:, 1]))
             keep = d - reach - vm * horizon - mobs["r"] <= mobs["margin"]
             near_m = {k: v[keep] for k, v in mobs.items()}
-        c1, end1 = self._leg(start[None], 0.0, STEPS1, speed, W, H, pr, near_m, near_b, latency)
-        c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, near_m, near_b, latency)
+        health = {"pos": np.array([[t.x / k, t.y / k] for t in safe]).reshape(-1, 2),
+                  "r": np.array([t.r / k for t in safe])}
+        c1, end1 = self._leg(start[None], 0.0, STEPS1, speed, W, H, pr, near_m, near_b, latency, health)
+        c2, end2 = self._leg(end1[0], 0.4, STEPS2, speed, W, H, pr, near_m, near_b, latency, health)
         follow = (c2 * 0.7 + self._spot(end2, W, H, mobs)).min(axis=1)
         total = c1[0] + follow
         total += (1 - DIRS @ pref) * pull

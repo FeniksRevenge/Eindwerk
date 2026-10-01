@@ -84,10 +84,15 @@ def learn(cfg, cls, lab, radius):
 
 def forget(cfg, lab, radius):
     """Remember that this color+size is not a thing (never the player's color and size)."""
+    tol = np.array(cfg.get("tolerance", [30, 14, 14]))
     pl = (cfg.get("colors") or {}).get("player") or {}
     if pl.get("lab") and pl.get("radius"):
-        tol = np.array(cfg.get("tolerance", [30, 14, 14]))
         if np.all(np.abs(np.array(pl["lab"]) - np.array(lab)) <= tol) and 0.65 <= radius / float(pl["radius"]) <= 1.6:
+            return
+    # Nor a real kind of thing (a bullet, the health circle...): the detector wouldn't apply it anyway.
+    for c in (cfg.get("colors") or {}).values():
+        if c and c.get("lab") and c.get("radius") and np.all(np.abs(np.array(c["lab"]) - np.array(lab)) <= tol * 0.5) \
+                and 0.75 <= radius / float(c["radius"]) <= 1.33:
             return
     ignore = cfg.setdefault("ignore", [])
     for ig in ignore:

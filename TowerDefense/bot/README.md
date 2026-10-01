@@ -139,6 +139,9 @@ deleted (with its `_bot.png` and `.json`).
 | **S** | skip this photo (it's kept) |
 | **Esc** | stop (the current photo is kept) |
 
+Bullets, mobs and health circles can't be put on the ignore list (an old entry that matches one of them is
+not applied), so a wrong X can never make the bot blind to them.
+
 Gray crossed-out circles are things on the **ignore list** (you once said "not a thing"). If one of them
 *is* a thing, click it and pick what it is: it's taken off the ignore list and learned. **Clear ignore
 list** in the app empties the whole list at once. When you click, the smallest circle under the mouse is
@@ -194,6 +197,11 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 - It also keeps a bit more distance from them when choosing where to go: yellow 1.6x, orange 1.3x, the
   boss 3.6x as much as a normal mob.
 - The yellow mob's danger size is its **ring**, like the orange shooter's.
+
+## Health circles
+It goes for green health circles (+2 HP), also during a boss fight unless the circle is right next to the
+boss: picking one up on the way counts as a big reward in its planning, and it heads toward the nearest
+one. In the simulator it collects about twice as many as before, for slightly more near misses.
 
 ## Dodging
 - The planner checks the **closest approach during each time step**, not only at sampled moments, so a fast

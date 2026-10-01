@@ -57,7 +57,8 @@ RAMP_ORDER = ["shooter", "grunt", "runner", "tank", "shooter", "grunt"]
 TRAIN_PARAMS = {
     "BULLET_MARGIN": (8, 60), "MOB_MARGIN": (20, 150), "BOSS_MARGIN": (0, 200),
     "CROWD_WEIGHT": (300, 9000), "EDGE_MARGIN": (40, 320), "EDGE_WEIGHT": (0.05, 3.0),
-    "ORBIT_WEIGHT": (0, 600), "BOSS_AWAY": (0, 2), "BOSS_CENTER": (0, 5),
+    "ORBIT_WEIGHT": (0, 600), "BOSS_AWAY": (0, 2), "BOSS_CENTER": (0, 5), "HEALTH_PULL": (0, 5000),
+    "HEALTH_REWARD": (0, 20000),
 }
 EPISODE_CAP = 240.0        # a training run ends after this many seconds even if still alive
 
@@ -87,6 +88,7 @@ class Sim:
         self.respawns = []  # (time, kind)
         self.tracker, self.brain = Tracker(), Brain(**(brain_kw or {}))
         self.corner_time = 0.0
+        self.picked = 0
         n_sh, n_ye, n_gr, n_tk, boss = SCENARIOS[scenario]
         for kind, n in (("shooter", n_sh), ("runner", n_ye), ("grunt", n_gr), ("tank", n_tk)):
             for _ in range(n):
@@ -230,6 +232,7 @@ class Sim:
             if math.hypot(p.x - px, p.y - py) < p.r + PR:
                 self.pickups.remove(p)
                 self.hp = min(MAX_HP, self.hp + 2)
+                self.picked += 1
         # getting hit (0.5 s of invulnerability after a hit, like a blink)
         if self.t - self.last_hit > 0.5:
             for o in self.objs + self.bullets:
