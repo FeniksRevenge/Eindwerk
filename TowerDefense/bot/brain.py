@@ -133,7 +133,7 @@ class Brain:
         cost += np.where(wall < self.WALL_MARGIN, (self.WALL_MARGIN - wall) ** 2 * self.WALL_WEIGHT, 0)
         return cost
 
-    def think(self, player, player_speed, tracks, width, height, latency=0.0):
+    def think(self, player, player_speed, tracks, width, height, latency=0.0, start_xy=None):
         """player: (x, y, r) in screen pixels of the play area. tracks: vision.Track list.
         Returns (keys to hold, (aim_x, aim_y) in play-area pixels or None, fire?)."""
         px, py, prad = player
@@ -200,7 +200,8 @@ class Brain:
 
         # During the reaction delay the player keeps moving with the keys we're still holding,
         # so plan from where it will be when the new keys land, not from where it is now.
-        start = p + self.prev * speed * latency
+        # start_xy: where the caller knows the player will be (it replays the keys already sent).
+        start = np.array([start_xy[0] / k, start_xy[1] / k]) if start_xy is not None else p + self.prev * speed * latency
         start = np.array([min(max(start[0], pr), W - pr), min(max(start[1], pr), H - pr)])
         # Only things that could get within their margin during the 0.8 s look-ahead matter for the
         # moves (the rest add exactly zero), so leave the far ones out: same decision, much less work.

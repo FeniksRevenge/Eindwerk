@@ -122,7 +122,19 @@ class Sim:
                 t = Track(o.x, o.y, o.r, "enemy_bullet" if o.kind == "bullet" else o.kind, o.vx, o.vy)
                 t.age = 10
                 tracks.append(t)
-        keys, aim, fire = self.brain.think((self.px, self.py, PR), PSPEED, tracks, W, H, latency=LATENCY)
+        # Where the player will be when these keys land (the keys already on their way replayed),
+        # like the real bot does.
+        sx, sy, t, cur = self.px, self.py, self.t, self.keys
+        for when, k, _a, _f in self.pending + [(self.t + LATENCY, None, None, None)]:
+            dx = ("d" in cur) - ("a" in cur)
+            dy = ("s" in cur) - ("w" in cur)
+            n = math.hypot(dx, dy) or 1
+            sx += dx / n * PSPEED * (when - t)
+            sy += dy / n * PSPEED * (when - t)
+            t, cur = when, k
+        sx, sy = min(max(sx, PR), W - PR), min(max(sy, PR), H - PR)
+        keys, aim, fire = self.brain.think((self.px, self.py, PR), PSPEED, tracks, W, H, latency=LATENCY,
+                                           start_xy=(sx, sy))
         self.pending.append((self.t + LATENCY, keys, aim, fire))
 
     def kill(self, o):

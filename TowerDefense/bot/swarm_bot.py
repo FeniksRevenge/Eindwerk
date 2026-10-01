@@ -707,7 +707,9 @@ class BotController:
             frames += 1
             if time.perf_counter() - fps_t > 1:
                 method = getattr(getattr(bot.io, "grabber", None), "method", "")
-                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f}" + (f" ({method})" if method else ""))
+                delay = (getattr(bot, "latency", 0) + getattr(bot, "input_delay", 0)) * 1000
+                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f}" + (f" ({method})" if method else "")
+                              + f", delay {delay:.0f} ms")
                 frames, fps_t = 0, time.perf_counter()
         if bot is not None:
             bot.release()

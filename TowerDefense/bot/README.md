@@ -189,7 +189,11 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
   keep a CPU core busy.
 - The brain leaves out bullets and mobs that can't reach you within its 0.8 s look-ahead (exactly the same
   decisions, about 30% less work).
-- The bot plans from where you'll be when its keys land, so its reaction delay is accounted for.
+- The bot **measures the game's input delay** while it plays (how long after it sends a key you actually
+  start moving in the screenshots; Roblox + capture is typically ~0.1-0.2 s) and plans from where you'll
+  really be when its new keys land, replaying the keys that are still on their way. Ignoring that delay was
+  why it often seemed not to react to bullets. The app shows it next to the fps, e.g. `30 fps (dxcam), delay 140 ms`.
+  In a test game with a 0.15 s input delay this took hits from 6.7 to 0 per minute.
 
 ## Danger priority
 - It **shoots yellow mobs first** (they shoot in all directions), then **orange shooters**, unless something

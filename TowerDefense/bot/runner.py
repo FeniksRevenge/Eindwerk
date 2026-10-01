@@ -40,6 +40,12 @@ class BotRunner:
         self.last_t = None
         self.stuck_time = 0.0
         self.latency = 0.05  # seconds from screenshot to keys, measured while running
+        # Seconds from sending keys until the player visibly moves in a screenshot (the game's input
+        # handling + rendering + capture). Measured while playing; Roblox is typically ~0.1 s.
+        self.input_delay = 0.08
+        self.key_log = [(-1e9, ())]   # (time sent, keys)
+        self.motion = []              # (screenshot time, x, y) of real sightings
+        self.next_delay_check = 0.0
         self.bad_spots = []  # [(x, y, until_time)]: static things mistaken for the player
         self.notes = []      # messages for the log, collected by the caller
         self.last = None     # everything from the latest tick, for screenshots
@@ -70,6 +76,59 @@ class BotRunner:
         self.io.set_keys(())
         self.io.mouse(False)
         self.last_keys = ()
+
+    def _replay_keys(self, x, y, t_from, t_to, speed):
+        """Where keys sent between t_from and t_to move the player from (x, y)."""
+        log = self.key_log
+        for i, (ts, keys) in enumerate(log):
+            te = log[i + 1][0] if i + 1 < len(log) else t_to
+            a, b = max(ts, t_from), min(te, t_to)
+            if b <= a or not keys:
+                continue
+            dx = ("d" in keys) - ("a" in keys)
+            dy = ("s" in keys) - ("w" in keys)
+            n = math.hypot(dx, dy) or 1.0
+            x += dx / n * speed * (b - a)
+            y += dy / n * speed * (b - a)
+        return x, y
+
+    def _keys_at(self, t):
+        """The keys that were being sent at time t."""
+        keys = ()
+        for ts, k in self.key_log:
+            if ts > t:
+                break
+            keys = k
+        return keys
+
+    def _measure_input_delay(self, speed, r, w, h):
+        """Which delay best explains how the player moved after each key change? (Compares the seen
+        movement between screenshots with the keys sent D seconds earlier, for D = 0 .. 0.4 s.)"""
+        m = self.motion[-90:]
+        if len(m) < 20 or len(self.key_log) < 4:
+            return
+        pairs = []
+        for (t0, x0, y0), (t1, x1, y1) in zip(m, m[1:]):
+            if not (0 < t1 - t0 < 0.15):
+                continue
+            if min(x0, y0, w - x0, h - y0, x1, y1, w - x1, h - y1) < 2.5 * r:
+                continue  # at a wall the player can't move freely
+            pairs.append(((t0 + t1) / 2, (x1 - x0) / (t1 - t0), (y1 - y0) / (t1 - t0)))
+        if len(pairs) < 15:
+            return
+        errs = []
+        for d in np.arange(0.0, 0.42, 0.02):
+            e = 0.0
+            for tm, vx, vy in pairs:
+                keys = self._keys_at(tm - d)
+                dx = ("d" in keys) - ("a" in keys)
+                dy = ("s" in keys) - ("w" in keys)
+                n = math.hypot(dx, dy) or 1.0
+                e += (vx - dx / n * speed) ** 2 + (vy - dy / n * speed) ** 2
+            errs.append(e)
+        best = int(np.argmin(errs))
+        if errs[best] < 0.85 * max(errs):  # the key changes actually tell the delays apart
+            self.input_delay = 0.7 * self.input_delay + 0.3 * float(best * 0.02)
 
     def _save_template(self, frame, found):
         x, y, r = found
@@ -217,11 +276,23 @@ class BotRunner:
                 return "ok"
         self.player = (x, y, r)
         speed = self.player_speed or DEFAULT_PLAYER_SPEED * r / REF_R
+        if not estimated:
+            self.motion.append((t_grab, x, y))
+            if len(self.motion) > 120:
+                del self.motion[:-120]
+        if now >= self.next_delay_check:
+            self.next_delay_check = now + 0.5
+            self._measure_input_delay(speed, r, w, h)
 
         k = r / REF_R
         tracks = self.tracker.update(dets, dt, (x, y), max_speed=400 * k, new_bullet_speed=260 * k)
         # Delay between the screenshot and our keys taking effect (processing + roughly one frame).
-        keys, aim, fire = self.brain.think((x, y, r), speed, tracks, w, h, latency=min(0.25, self.latency))
+        # Where the player will be when new keys take effect: the screenshot shows the keys from
+        # input_delay ago; the keys sent since then are still on their way, so replay them.
+        lat = min(0.45, self.latency + self.input_delay)
+        sx, sy = self._replay_keys(x, y, t_grab - self.input_delay, now, speed)
+        sx, sy = min(max(sx, r), w - r), min(max(sy, r), h - r)
+        keys, aim, fire = self.brain.think((x, y, r), speed, tracks, w, h, latency=lat, start_xy=(sx, sy))
         self.last.update({"keys": keys, "aim": aim, "fire": fire, "speed": speed, "t": t_grab,
                           # moving things with their speed, so the overlay can glide between frames
                           "tracks": [(tr.kind, tr.x, tr.y, tr.r, tr.vx, tr.vy) for tr in tracks]})
@@ -232,6 +303,9 @@ class BotRunner:
         if keys != self.last_keys:
             self.io.set_keys(keys)
             self.last_keys = keys
+            self.key_log.append((self.io.now(), keys))
+            if len(self.key_log) > 200:
+                del self.key_log[1:-150]
         if aim is not None:
             self.io.aim(min(max(aim[0], 0), w - 1), min(max(aim[1], 0), h - 1))
         self.io.mouse(fire)
