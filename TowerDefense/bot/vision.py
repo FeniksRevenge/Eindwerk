@@ -32,22 +32,24 @@ CLASS_HELP = {
 
 DEFAULT_TOLERANCE = [30, 14, 14]  # allowed difference in L, a, b (OpenCV 8-bit Lab)
 
-# Colors and sizes measured from real screenshots of the Roblox game (a 2534x1239 play area).
-# Sizes are scaled to your play area's height when the preset is applied.
+# Colors and sizes measured from real screenshots of the Roblox game (a 2534x1239 play area), last
+# checked against close-ups of every enemy. Sizes are scaled to your play area's height when the preset
+# is applied. Bump PRESET_VERSION when this changes: configs using the preset then pick it up by themselves.
+PRESET_VERSION = 2
 PRESET = {
     "ref_height": 1239,
     "colors": {
         "player": {"lab": [172, 128, 123], "radius": 26.5},
-        "enemy_bullet": {"lab": [131, 191, 167], "radius": 14.5},
-        "shooter_bullet": {"lab": [189, 156, 192], "radius": 13.0},
-        "grunt": {"lab": [139, 191, 165], "radius": 43.0},
-        "shooter": {"lab": [189, 156, 192], "radius": 38.0},       # its whole ring, not just the ball
-        "tank": {"lab": [151, 190, 65], "radius": 63.0},
-        "tank_mini": {"lab": [183, 171, 85], "radius": 29.5},
-        "boss": {"lab": [131, 191, 167], "radius": 128.0},
+        "enemy_bullet": {"lab": [127, 189, 166], "radius": 14.5},     # the boss's red bullets
+        "shooter_bullet": {"lab": [182, 155, 190], "radius": 12.5},   # orange bullets
+        "grunt": {"lab": [138, 190, 165], "radius": 43.5},            # red square
+        "shooter": {"lab": [184, 155, 190], "radius": 35.0},          # orange ball: its whole ring
+        "tank": {"lab": [149, 189, 66], "radius": 70.0},              # purple hollow square (63-80 as it turns)
+        "tank_mini": {"lab": [180, 170, 86], "radius": 32.0},         # light purple tiny tank
+        "boss": {"lab": [130, 191, 167], "radius": 162.0},            # red cross
         "health": {"lab": [217, 64, 174], "radius": 9.0},
-        "runner": {"lab": [229, 123, 199], "radius": 33.5},       # yellow mob (shoots in all directions)
-        "yellow_bullet": {"lab": [229, 123, 199], "radius": 12.8},
+        "runner": {"lab": [225, 123, 198], "radius": 32.0},           # yellow square (inside a ring, r ~43)
+        "yellow_bullet": {"lab": [220, 123, 196], "radius": 12.8},
     },
 }
 
@@ -144,6 +146,22 @@ def find_rings_near(bgr, lab, balls, ball_r):
     return out
 
 
+def _ring_with_inside(mask, center, r):
+    """A ring with something inside that got glued to it (the yellow mob's square): lit all around at
+    the outer edge, with a dark gap just inside. A filled ball is lit at both."""
+    cx, cy = center
+    h, w = mask.shape
+    ang = np.linspace(0, 2 * np.pi, 48, endpoint=False)
+
+    def lit(rr):
+        xs = np.clip(np.round(cx + rr * np.cos(ang)).astype(int), 0, w - 1)
+        ys = np.clip(np.round(cy + rr * np.sin(ang)).astype(int), 0, h - 1)
+        return float((mask[ys, xs] > 0).mean())
+    outer = max(lit(r - 1.0), lit(r - 1.5), lit(r - 2.0))
+    gap = min(lit(r * 0.78), lit(r * 0.82))
+    return outer >= 0.7 and gap <= 0.4
+
+
 def find_rings(bgr, lab, scale, ball_r):
     """Thin round rings in this color (the orange shooter's ring), as (x, y, r) in full-size pixels.
     The ring is ~1 pixel wide, so the image is shrunk by averaging (keeps a faint ring) and matched
@@ -152,8 +170,8 @@ def find_rings(bgr, lab, scale, ball_r):
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
     ref = cv2.cvtColor(cv2.cvtColor(np.uint8([[lab]]), cv2.COLOR_LAB2BGR), cv2.COLOR_BGR2HSV)[0, 0]
     h = int(ref[0])
-    mask = cv2.inRange(hsv, np.array([max(h - 6, 0), 90, 45], np.uint8), np.array([min(h + 6, 179), 255, 255], np.uint8))
-    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8))
+    raw = cv2.inRange(hsv, np.array([max(h - 6, 0), 90, 45], np.uint8), np.array([min(h + 6, 179), 255, 255], np.uint8))
+    mask = cv2.dilate(raw, np.ones((3, 3), np.uint8))
     n, _, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
     out = []
     for i in range(1, n):
@@ -161,7 +179,7 @@ def find_rings(bgr, lab, scale, ball_r):
         r = max(bw, bh) / 2.0 * scale
         if r < ball_r * 1.6 or r > ball_r * 8 or max(bw, bh) > 1.4 * min(bw, bh):
             continue
-        if area > 0.6 * bw * bh:
+        if area > 0.6 * bw * bh and not _ring_with_inside(raw, cents[i], max(bw, bh) / 2.0):
             continue  # a filled blob (e.g. a ball with the ring glued on), not a ring
         out.append((cents[i][0] * scale + scale / 2, cents[i][1] * scale + scale / 2, r))
     return out
@@ -236,19 +254,24 @@ def set_main_player(cfg, lab, radius):
     colors["player"] = {"lab": [int(round(v)) for v in lab], "radius": round(float(radius), 1)}
 
 
-def is_game_over(bgr):
-    """The GAME OVER screen: the whole background turns dark red and a big dark gray panel (score, top
-    scores, PLAY AGAIN) sits in the middle. A red hit flash or a big red boss doesn't look like that."""
+def game_over_info(bgr):
+    """What the game-over check measures: median BGR of the screen edges and of the middle."""
     h, w = bgr.shape[:2]
     step = max(1, min(h, w) // 90)  # look at a sparse grid of pixels only: cheap enough for every frame
     bh, bw = h // 9, w // 13
     border = np.concatenate([bgr[:bh:step, ::step, :3].reshape(-1, 3), bgr[h - bh::step, ::step, :3].reshape(-1, 3),
                              bgr[::step, :bw:step, :3].reshape(-1, 3), bgr[::step, w - bw::step, :3].reshape(-1, 3)])
     b, g, r = np.median(border, axis=0)
-    if not (r >= 25 and r - max(b, g) >= 15):
-        return False  # background isn't dark red
     cb, cg, cr = np.median(bgr[int(h * .28):int(h * .78):step, int(w * .34):int(w * .66):step, :3].reshape(-1, 3), axis=0)
-    return 12 <= max(cb, cg, cr) <= 70 and max(cb, cg, cr) - min(cb, cg, cr) <= 14  # dark gray panel
+    red_bg = r >= 25 and r - max(b, g) >= 15
+    panel = 12 <= max(cb, cg, cr) <= 70 and max(cb, cg, cr) - min(cb, cg, cr) <= 14
+    return {"border": (int(b), int(g), int(r)), "middle": (int(cb), int(cg), int(cr)), "game_over": bool(red_bg and panel)}
+
+
+def is_game_over(bgr):
+    """The GAME OVER screen: the whole background turns dark red and a big dark gray panel (score, top
+    scores, PLAY AGAIN) sits in the middle. A red hit flash or a big red boss doesn't look like that."""
+    return game_over_info(bgr)["game_over"]
 
 
 def find_play_again(bgr):
@@ -491,6 +514,12 @@ class Detector:
             if "shooter" in names:
                 balls = [(b[0] * s + s / 2, b[1] * s + s / 2) for b in blobs if b[2] * s < smallest * 2.5]
                 rings = find_rings_near(bgr, labs[0], balls, smallest)
+            # The yellow mob is a square inside a ring too: its danger size is the ring.
+            yellow_rings = None
+            if "runner" in names:
+                runner_r = dict(members)["runner"]
+                centers = [(b[0] * s + s / 2, b[1] * s + s / 2) for b in blobs if b[2] * s >= 0.6 * runner_r]
+                yellow_rings = find_rings_near(bgr, labs[0], centers, smallest) if centers else []
             used_rings = set()
             # Floating text ("+10", "+25"...) in a mob's color: a row of bullet-sized pieces where at
             # least one isn't a round ball (a "1", a "+", a "2"...). Rows of bullets and the 3 tiny tanks
@@ -524,12 +553,18 @@ class Detector:
                     continue  # floating text ("+10" etc.) in a mob's color: not solid like the real thing
                               # (only small things: a big mob can look dented when another overlaps it)
                 if rings is not None and cls in ("shooter", "shooter_bullet"):
-                    ring = next((g for g in rings if g[2] > r * 1.5 and math.hypot(g[0] - x, g[1] - y) < g[2] * 0.7), None)
+                    ring = max((g for g in rings if g[2] > r * 1.5 and math.hypot(g[0] - x, g[1] - y) < g[2] * 0.7),
+                               key=lambda g: g[2], default=None)  # the outer one is the real ring
                     if ring is not None:
                         cls, r = "shooter", ring[2]  # danger size = the whole ring, not just the ball
                         used_rings.add(ring)
                     elif "shooter_bullet" in names and r < 2.5 * dict(members).get("shooter_bullet", r):
                         cls = "shooter_bullet"
+                if cls == "runner" and yellow_rings:
+                    ring = max((g for g in yellow_rings if g[2] > r * 1.1 and math.hypot(g[0] - x, g[1] - y) < g[2] * 0.7),
+                               key=lambda g: g[2], default=None)
+                    if ring is not None:
+                        r = ring[2]
                 # Never ignore the player: a "not a thing" on it once would blind the bot for good.
                 ignored = bool(self.ignore) and cls != "player" and self._ignored(lab, r)
                 if ignored and not keep_ignored:
@@ -540,9 +575,16 @@ class Detector:
             # A shooter's ring with no ball visible (ball flashing or hidden) is still a shooter.
             # The boss's small orange rings are too small to count.
             for g in rings or []:
+                if any(math.hypot(g[0] - u[0], g[1] - u[1]) < max(g[2], u[2]) for u in used_rings):
+                    continue  # the same ring found twice (its inner and outer edge)
                 if g not in used_rings and g[2] >= 2.2 * smallest:
                     found.append({"name": "shooter", "cls": "shooter", "x": g[0], "y": g[1], "r": g[2],
                                   "lab": [float(v) for v in labs[0]], "ignored": False})
+        # The boss has a white square in its middle: nothing deep inside the boss is the player.
+        bosses = [d for d in found if d["cls"] == "boss"]
+        if bosses:
+            found = [d for d in found if d["cls"] != "player" or
+                     not any(math.hypot(d["x"] - b["x"], d["y"] - b["y"]) < 0.45 * b["r"] for b in bosses)]
         return found
 
     def detect(self, bgr):

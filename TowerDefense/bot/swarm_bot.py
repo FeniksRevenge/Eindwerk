@@ -25,8 +25,8 @@ import numpy as np
 
 from phototrainer import list_photos, train_semi
 from runner import BotRunner
-from vision import (CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, find_play_again, measure_blob,
-                    set_main_player)
+from vision import (CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, PRESET_VERSION, Detector, annotate, find_play_again,
+                    game_over_info, is_game_over, measure_blob, set_main_player)
 
 # When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
 FROZEN = getattr(sys, "frozen", False)
@@ -281,9 +281,22 @@ def load_config():
     with CONFIG_LOCK:
         with open(CONFIG_PATH) as f:
             cfg = json.load(f)
-        if use_main_screen(cfg):
+        changed = use_main_screen(cfg)
+        if cfg.get("preset") and cfg.get("preset_version") != PRESET_VERSION:
+            set_preset_colors(cfg)  # the preset got better: use the new one
+            changed = True
+        if changed:
             save_config(cfg)
     return cfg
+
+
+def set_preset_colors(cfg):
+    """All colors and sizes from the preset, scaled to the play area."""
+    r = cfg.get("region") or main_monitor()
+    scale = r["height"] / PRESET["ref_height"]
+    cfg["colors"] = {n: {"lab": list(c["lab"]), "radius": round(c["radius"] * scale, 1)}
+                     for n, c in PRESET["colors"].items()}
+    cfg["preset_version"] = PRESET_VERSION
 
 
 def main_monitor():
@@ -307,9 +320,7 @@ def use_main_screen(cfg):
         return False
     cfg["region"] = region
     if cfg.get("preset"):
-        scale = region["height"] / PRESET["ref_height"]
-        cfg["colors"] = {n: {"lab": c["lab"], "radius": round(c["radius"] * scale, 1)}
-                         for n, c in PRESET["colors"].items()}
+        set_preset_colors(cfg)
     return True
 
 
@@ -374,6 +385,7 @@ def apply_preset():
     cfg["preset"] = True
     cfg.pop("region", None)
     use_main_screen(cfg)  # sets the play area and scales the preset sizes to it
+    cfg["ignore"] = []    # a fresh start: forget the "not a thing" list too
     save_config(cfg)
     return True
 
@@ -592,7 +604,7 @@ class BotController:
         bot = None
         capture_logged = blind_shot = False
         auto_every, next_auto = 0, 0.0
-        auto_restart, restarts, clicks = False, 0, 0
+        auto_restart, restarts = False, 0
         frames, fps_t = 0, time.perf_counter()
         last_status = None
         while not self._quit.is_set():
@@ -613,8 +625,7 @@ class BotController:
                         blind_shot = False
                         last_status = None
                         auto_every = float(cfg.get("auto_shot_every", 10)) if cfg.get("auto_shots", True) else 0
-                        auto_restart = bool(cfg.get("auto_restart", False))
-                        restarts, clicks = 0, 0
+                        restarts = 0
                         next_auto = time.perf_counter() + auto_every
                         self.on_event("status", "Running")
                         self.on_event("log", "Started.")
@@ -643,35 +654,25 @@ class BotController:
                 self.on_event("status", "Error")
                 self.on_event("log", f"Error, stopped: {e}")
                 continue
-            if status in ("dead", "game_over_waiting"):
+            if status == "dead" and bot.death_reason == "game over screen":
                 auto_restart = bool(read_config_or_empty().get("auto_restart", False))  # can change mid-run
-            if status == "dead" and auto_restart and bot.death_reason == "game over screen":
-                secs = bot.run_seconds()
-                if self._play_again(bot):
-                    restarts += 1
-                    clicks = 1
-                    bot.reset()
-                    self.on_event("log", f"Game over after {secs:.0f}s. Auto restart: clicked PLAY AGAIN "
-                                         f"(restart {restarts}).")
-                    continue
-                self.on_event("log", "Auto restart: couldn't find the PLAY AGAIN button (or Roblox isn't in front).")
-            if status == "game_over_waiting":  # clicked PLAY AGAIN, but the GAME OVER screen is still there
-                if auto_restart and clicks < 3 and self._play_again(bot):
-                    clicks += 1
-                    self.on_event("log", f"Auto restart: GAME OVER screen still there, clicked PLAY AGAIN again ({clicks}/3).")
-                    continue
                 if auto_restart:
-                    status = "dead"
-                    bot.death_reason = "PLAY AGAIN didn't start a new game"
-                else:
-                    status = "waiting"
+                    secs = bot.run_seconds()
+                    if self._auto_restart(bot):
+                        restarts += 1
+                        bot.reset()
+                        self.on_event("log", f"Game over after {secs:.0f}s. Auto restart: new game started "
+                                             f"(restart {restarts}).")
+                        continue
+                    bot.death_reason = "auto restart failed"
+            if status == "game_over_waiting":
+                status = "waiting"
             if status == "dead":
                 self.running = False
                 bot.io.close()
                 self.on_event("status", "Stopped (died)")
-                if bot.death_reason.startswith("PLAY AGAIN"):
-                    self.on_event("log", "Auto restart: clicked PLAY AGAIN 3 times but no new game started. "
-                                         "Stopped. Press * to start again.")
+                if bot.death_reason == "auto restart failed":
+                    self.on_event("log", "Auto restart didn't work (see above). Stopped. Press * to start again.")
                 else:
                     self.on_event("log", f"Died ({bot.death_reason}) after {bot.run_seconds():.0f}s. "
                                          "Stopped. Press * to start again.")
@@ -712,20 +713,78 @@ class BotController:
             bot.release()
 
 
-    def _play_again(self, bot):
-        """Click the PLAY AGAIN button on the GAME OVER screen. Returns True if it clicked."""
-        frame = getattr(bot, "last_frame", None)
-        pos = find_play_again(frame) if frame is not None else None
-        if pos is None or not bot.io.focused():
-            return False
+    def _auto_restart(self, bot):
+        """On the GAME OVER screen: wait for it to finish appearing, click PLAY AGAIN (up to 3 times)
+        until the screen goes away. Returns True when a new game started. Runs on the bot thread;
+        - (stop) cancels it."""
         bot.release()
-        bot.io.click(*pos)
-        return True
+        t0 = time.perf_counter()
+        clicks, last_click, frame, note = 0, 0.0, None, ""
+        while time.perf_counter() - t0 < 12 and not self._stop.is_set() and not self._quit.is_set():
+            frame = bot.io.grab()
+            now = time.perf_counter()
+            if not is_game_over(frame):
+                if clicks:
+                    return True  # the GAME OVER screen is gone: a new game is starting
+                note = "the GAME OVER screen went away by itself"
+                time.sleep(0.05)
+                continue
+            if now - t0 < 1.0 or now - last_click < 3.0:
+                continue  # let it finish appearing / give the last click time to work
+            if clicks >= 3:
+                note = "clicked PLAY AGAIN 3 times, but the GAME OVER screen stayed"
+                break
+            pos = find_play_again(frame)
+            if pos is None:
+                note = "found the GAME OVER screen but not the PLAY AGAIN button"
+                continue
+            if not bot.io.focused():
+                note = "Roblox isn't the window in front"
+                continue
+            bot.io.click(*pos)
+            clicks += 1
+            last_click = now
+            self.on_event("log", f"Auto restart: clicked PLAY AGAIN at ({pos[0]:.0f}, {pos[1]:.0f}) ({clicks}/3).")
+        if self._stop.is_set() or self._quit.is_set():
+            return False
+        if frame is not None:
+            self._report_game_over(frame, f"Auto restart failed: {note or 'no GAME OVER screen seen'}.")
+        return False
 
-    def _take_screenshot(self, bot):
+    def _report_game_over(self, frame, headline):
+        """Log what the game-over check measured, and save the frame, so a wrong guess can be fixed."""
+        info = game_over_info(frame)
+        pos = find_play_again(frame)
+        self.on_event("log", f"{headline} Background {info['border']}, middle {info['middle']} (BGR); "
+                             f"GAME OVER screen: {'yes' if info['game_over'] else 'no'}; PLAY AGAIN button: "
+                             f"{'at (%.0f, %.0f)' % pos if pos else 'not found'}. Saving a screenshot: please send it.")
+        self._take_screenshot(None, frame=frame)
+
+    def test_play_again(self, click=True):
+        """For the app's 'Test PLAY AGAIN' button: look at the screen now, report, and click if found."""
+        def work():
+            try:
+                cfg = load_config()
+                with mss.mss() as sct:
+                    frame = np.ascontiguousarray(np.asarray(sct.grab(cfg["region"]))[:, :, :3])
+                info = game_over_info(frame)
+                pos = find_play_again(frame) if info["game_over"] else None
+                self._report_game_over(frame, "Test PLAY AGAIN:")
+                if click and pos is not None:
+                    io = WindowsIO(cfg["region"], require_focus=False)
+                    io.click(*pos)
+                    io.close()
+                    self.on_event("log", f"Test PLAY AGAIN: clicked at ({pos[0]:.0f}, {pos[1]:.0f}).")
+            except Exception as e:
+                self.on_event("log", f"Test PLAY AGAIN failed: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _take_screenshot(self, bot, frame=None):
         """Grab what the bot sees right now and save it on another thread, so play isn't interrupted."""
         try:
-            if bot is not None and bot.last is not None:
+            if frame is not None:
+                last = {"frame": frame, "dets": {}, "player": None, "keys": (), "aim": None, "fire": False}
+            elif bot is not None and bot.last is not None:
                 last = dict(bot.last)
             else:  # bot not running: just look at the screen
                 cfg = load_config()

@@ -14,6 +14,9 @@ import math
 import numpy as np
 
 REF_R = 13.0
+# Bump when the dodging logic changes enough that settings trained for the old one don't fit anymore:
+# saved training ("brain_params") from another version is then ignored.
+BRAIN_VERSION = 2
 S = math.sqrt(0.5)
 DIRS = np.array([[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [S, S], [S, -S], [-S, S], [-S, -S]])
 DIR_KEYS = [(), ("d",), ("a",), ("s",), ("w",), ("s", "d"), ("w", "d"), ("s", "a"), ("w", "a")]
@@ -29,7 +32,7 @@ BULLETLIKE = 170.0  # game units/s: mobs are slower than this (fastest: tiny tan
 
 
 class Brain:
-    BULLET_MARGIN = 22
+    BULLET_MARGIN = 30
     MOB_MARGIN = 60
     BOSS_MARGIN = 60    # extra distance to keep from the boss (bigger made it hide in corners)
     CROWD_WEIGHT = 2500
@@ -37,7 +40,7 @@ class Brain:
     WALL_WEIGHT = 0.35
     ORBIT_WEIGHT = 150
     EDGE_MARGIN = 190     # distance from each edge where moving on costs extra (corners count twice)
-    EDGE_WEIGHT = 0.5
+    EDGE_WEIGHT = 0.25
     BOSS_AWAY = 0.35      # boss nearby: mostly circle around it, only a little straight away from it
     BOSS_CENTER = 2.5     # ... and lean toward the middle so the circling doesn't end in a corner
 
@@ -57,6 +60,10 @@ class Brain:
         if t.kind == "boss":
             return max(measured, t.vmax / k, 0.7 * player_speed)
         return max(measured, base * 0.8)
+
+    # How much the bot dislikes being near each kind (crowd cost). Shooters make bullets: yellow ones
+    # (all directions) most, orange ones less; the boss most of all.
+    DANGER = {"boss": 3.6, "runner": 1.6, "shooter": 1.3}
 
     BULLET_HIT = 1e6   # getting hit costs far more than any "too close" penalty (boss distance included)
     MOB_HIT = 3e5
@@ -144,7 +151,7 @@ class Brain:
             "margin": np.array([self.MOB_MARGIN + (self.BOSS_MARGIN if t.kind == "boss" else 0) for t in mob_t]),
             # Shooters (orange, yellow) keep their distance, so predict them by their own movement.
             "chaser": np.array([t.kind not in ("shooter", "runner") for t in mob_t], dtype=bool),
-            "weight": np.array([3.6 if t.kind == "boss" else 1.0 for t in mob_t]),
+            "weight": np.array([self.DANGER.get(t.kind, 1.0) for t in mob_t]),
         }
         bullets = {
             "pos": np.array([[t.x / k, t.y / k] for t in bul_t]).reshape(-1, 2),
@@ -210,7 +217,8 @@ class Brain:
         best = int(np.argmin(total))
         self.prev = DIRS[best]
 
-        # Aim at whatever would reach us first. Shooters count extra because they shoot back.
+        # Aim: yellow mobs first, then orange shooters (they make the bullets), unless something else is
+        # about to reach us (score = roughly seconds until it matters).
         target, best_score = None, math.inf
         for t in mob_t:
             if not (0 <= t.x <= width and 0 <= t.y <= height):
@@ -220,8 +228,10 @@ class Brain:
             gap = (math.hypot(t.x - px, t.y - py) - t.r) / k
             if t.kind == "boss":
                 score = gap / 80 + 1
-            elif t.kind in ("shooter", "runner"):  # they shoot back, so take them out early
-                score = gap / 150 * 0.5
+            elif t.kind == "runner":  # yellow: shoots in all directions, the most dangerous: first
+                score = gap / 150 * 0.3
+            elif t.kind == "shooter":  # orange: shoots at you, take it out early too
+                score = gap / 150 * 0.6
             else:
                 score = gap / DEFAULT_MOB_SPEED[t.kind]
             if score < best_score:

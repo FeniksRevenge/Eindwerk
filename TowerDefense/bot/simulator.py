@@ -37,18 +37,19 @@ BOT_DT = 1 / 14            # the real bot decides about 14x per second
 LATENCY = 0.07             # screenshot -> keys delay
 MAX_HP = 10
 PICKUP_CHANCE = 0.05
-RAMP_EVERY = 15.0          # seconds between extra enemies
+RAMP_EVERY = 15.0          # seconds between extra enemies (not in a boss wave)
+BOSS_SUMMON = 8.0          # the boss summons 3 grunts this often
 SCENARIOS = {  # shooters, yellow, grunts, tanks, boss
-    "Mixed": (3, 1, 3, 1, True),
+    "Mixed": (3, 1, 3, 1, False),
     "Many shooters": (6, 3, 2, 0, False),
-    "Boss": (2, 1, 2, 0, True),
+    "Boss": (0, 0, 0, 0, True),      # a boss wave is only the boss: it summons 3 grunts and shoots
     "Swarm (chasers)": (0, 0, 10, 2, False),
 }
 COLORS = {"grunt": "#e84a4a", "shooter": "#ffa040", "runner": "#f5d23c", "tank": "#b060f0",
           "tank_mini": "#d8a0ff", "boss": "#e84a4a", "health": "#5ee07a", "bullet_boss": "#e84a4a",
           "bullet_shooter": "#ffa040", "bullet_runner": "#f5d23c", "player": "#a8aab0"}
 HP = {"grunt": 3, "shooter": 3, "runner": 4, "tank": 12, "tank_mini": 1, "boss": 150}
-RADIUS = {"grunt": 43, "shooter": 38, "runner": 33, "tank": 63, "tank_mini": 22, "boss": 128}
+RADIUS = {"grunt": 43, "shooter": 35, "runner": 33, "tank": 70, "tank_mini": 32, "boss": 162}  # measured
 SPEED = {"grunt": 140, "shooter": 150, "runner": 130, "tank": 80, "tank_mini": 210, "boss": 90}
 RAMP_ORDER = ["shooter", "grunt", "runner", "tank", "shooter", "grunt"]
 
@@ -62,11 +63,11 @@ EPISODE_CAP = 240.0        # a training run ends after this many seconds even if
 
 
 class Obj:
-    __slots__ = ("kind", "x", "y", "r", "vx", "vy", "hp", "cd", "cd2", "rot", "src")
+    __slots__ = ("kind", "x", "y", "r", "vx", "vy", "hp", "cd", "cd2", "cd3", "rot", "src")
 
     def __init__(self, kind, x, y, r, vx=0.0, vy=0.0, hp=1, src=""):
         self.kind, self.x, self.y, self.r, self.vx, self.vy = kind, x, y, r, vx, vy
-        self.hp, self.cd, self.cd2, self.rot, self.src = hp, 1.0, 1.0, 0.0, src
+        self.hp, self.cd, self.cd2, self.cd3, self.rot, self.src = hp, 1.0, 1.0, 3.0, 0.0, src
 
 
 class Sim:
@@ -129,7 +130,7 @@ class Sim:
             for i in range(3):
                 a = i * 2 * math.pi / 3
                 self.spawn("tank_mini", o.x + math.cos(a) * 40, o.y + math.sin(a) * 40)
-        if o.kind != "tank_mini":
+        if o.kind != "tank_mini" and (self.scenario != "Boss" or o.kind == "boss"):  # boss wave: only the boss summons
             self.respawns.append((self.t + (10.0 if o.kind == "boss" else 2.5), o.kind))
         if self.rnd.random() < PICKUP_CHANCE:
             self.pickups.append(Obj("health", o.x, o.y, 18))
@@ -158,7 +159,7 @@ class Sim:
                                  (self.aim[1] - self.py) / d * 1640))
 
         # harder over time
-        if self.t >= self.next_ramp:
+        if self.t >= self.next_ramp and self.scenario != "Boss":
             self.next_ramp += RAMP_EVERY
             self.spawn(RAMP_ORDER[self.ramp_i % len(RAMP_ORDER)])
             self.ramp_i += 1
@@ -186,6 +187,13 @@ class Sim:
                     a = o.rot + i * math.pi / 4
                     self.bullets.append(Obj("bullet", o.x, o.y, 13, math.cos(a) * 450, math.sin(a) * 450, src="runner"))
             elif o.kind == "boss":
+                o.cd3 -= dt
+                if o.cd3 <= 0:  # summons 3 grunts next to itself
+                    o.cd3 = BOSS_SUMMON
+                    for i in range(3):
+                        a = self.rnd.uniform(0, 2 * math.pi)
+                        self.spawn("grunt", min(max(o.x + math.cos(a) * (o.r + 60), 40), W - 40),
+                                   min(max(o.y + math.sin(a) * (o.r + 60), 40), H - 40))
                 if o.cd <= 0:
                     o.cd, o.rot = 2.6, o.rot + 0.17
                     for i in range(18):

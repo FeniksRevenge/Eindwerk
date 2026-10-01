@@ -8,8 +8,11 @@ it holds WASD to dodge, moves the mouse to aim and holds **Space** to shoot (swi
 - **`/`** saves a screenshot of what the bot sees (you keep playing; see below)
 - It keeps playing until you die: it **stops by itself when the GAME OVER screen appears** (dark red background
   with the score panel). As a backup it also stops if it can't see you at all for 30 seconds (setting).
-- **Auto restart** (setting, off by default): after a game over it clicks **PLAY AGAIN** and keeps playing.
-  If 3 clicks don't start a new game, it stops.
+- **Auto restart** (setting, off by default): after a game over it waits ~1 s for the GAME OVER screen to
+  finish appearing, clicks **PLAY AGAIN** and keeps playing (up to 3 clicks, 3 s apart). If that doesn't
+  work it stops, logs what it measured and saves a screenshot. **Test PLAY AGAIN** (next to the setting):
+  switch to Roblox with the GAME OVER screen showing; 3 s later it checks the screen, logs what it found and
+  clicks the button.
 - It only sends keys/mouse while the **Roblox window is in front**, so it won't type into other apps
 
 Windows only.
@@ -41,7 +44,9 @@ Double-click **SwarmBot.exe** (or `start_app.bat` when running from source). It 
 
 ## Quick setup (no clicking)
 1. Put Roblox on your **main screen** (the bot only looks at the main screen, all of it, top to bottom).
-2. Click **Use preset colors**: colors and sizes measured from real screenshots of the game.
+2. Click **Use preset colors**: colors and sizes measured from real screenshots and close-ups of every
+   enemy. It's also a **reset**: it replaces all learned colors and empties the "not a thing" list. If you
+   use the preset, newer versions of the preset are picked up automatically.
 3. Click **Test view** to check everything gets circled.
 
 If the preset doesn't match (different graphics settings), calibrate yourself:
@@ -98,6 +103,9 @@ boss with its bullet rings), with the same reaction delay as in Roblox. Your pla
   you're watching. When the player reaches **0/10** it just plays again. **Reset training** goes back to
   the defaults.
 - The trained settings are saved in `config.json` (`brain_params`) and **the real bot uses them too**.
+  When the dodging logic changes a lot in a new version, older training is ignored and it starts fresh.
+- The **Boss** scenario is a boss wave like in the game: only the boss, which summons 3 grunts every 8 s
+  and shoots bullet rings and aimed shots.
 
 ## It can't find me (the gray ball)
 - If the bot doesn't see you within 3 seconds of pressing `*`, it **saves a screenshot automatically** and
@@ -179,6 +187,13 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 - The brain leaves out bullets and mobs that can't reach you within its 0.8 s look-ahead (exactly the same
   decisions, about 30% less work).
 - The bot plans from where you'll be when its keys land, so its reaction delay is accounted for.
+
+## Danger priority
+- It **shoots yellow mobs first** (they shoot in all directions), then **orange shooters**, unless something
+  else is about to reach you.
+- It also keeps a bit more distance from them when choosing where to go: yellow 1.6x, orange 1.3x, the
+  boss 3.6x as much as a normal mob.
+- The yellow mob's danger size is its **ring**, like the orange shooter's.
 
 ## Dodging
 - The planner checks the **closest approach during each time step**, not only at sampled moments, so a fast

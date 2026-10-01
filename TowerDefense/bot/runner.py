@@ -8,7 +8,7 @@ import math
 import cv2
 import numpy as np
 
-from brain import DEFAULT_PLAYER_SPEED, REF_R, Brain
+from brain import BRAIN_VERSION, DEFAULT_PLAYER_SPEED, REF_R, Brain
 from vision import Detector, Tracker, is_game_over
 
 HOLD_MAX = 15.0  # seconds it keeps you at a spot by your picture alone, without recognizing you
@@ -19,7 +19,9 @@ class BotRunner:
         self.cfg = cfg
         self.io = io
         # Dodge settings trained in the simulator (config "brain_params"), or the defaults.
-        self.params = params if params is not None else cfg.get("brain_params")
+        if params is None and cfg.get("brain_params_version") == BRAIN_VERSION:
+            params = cfg.get("brain_params")
+        self.params = params
         self.detector = Detector(cfg)
         # Death = the GAME OVER screen. Not seeing the player only counts as death after a long time
         # (backup, in case the game-over screen looks different on your PC).

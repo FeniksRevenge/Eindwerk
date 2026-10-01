@@ -18,6 +18,7 @@ from tkinter import filedialog, ttk
 from swarm_bot import (CONFIG_LOCK, load_config, CONFIG_PATH, FROZEN, SHOTS_DIR, BotController, apply_preset,
                        read_config_or_empty, save_config, use_main_screen)
 from phototrainer import list_photos, train_auto
+from brain import BRAIN_VERSION
 from vision import CLASSES, DEFAULT_TOLERANCE
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # source folder (not used when frozen)
@@ -155,8 +156,11 @@ class App:
         ttk.Checkbutton(wrap, text="Fast screen capture (dxcam); turn off if it can't find you", variable=self.fast_var,
                         command=self.save_settings).pack(anchor="w", pady=(2, 0))
         self.restart_var = tk.BooleanVar(value=cfg.get("auto_restart", False))
-        ttk.Checkbutton(wrap, text="Auto restart: click PLAY AGAIN after a game over", variable=self.restart_var,
-                        command=self.save_settings).pack(anchor="w", pady=(2, 0))
+        rrow = tk.Frame(wrap, bg=BG)
+        rrow.pack(fill="x", pady=(2, 0))
+        ttk.Checkbutton(rrow, text="Auto restart: click PLAY AGAIN after a game over", variable=self.restart_var,
+                        command=self.save_settings).pack(side="left")
+        ttk.Button(rrow, text="Test PLAY AGAIN", command=self.test_play_again).pack(side="left", padx=(8, 0))
         self.shots_on_var = tk.BooleanVar(value=cfg.get("auto_shots", True))
         ttk.Checkbutton(wrap, text="Take pictures automatically while the bot plays", variable=self.shots_on_var,
                         command=self.save_settings).pack(anchor="w", pady=(2, 6))
@@ -351,7 +355,9 @@ class App:
         from simulator import SimWindow
 
         def load():
-            return (read_config() or {}).get("brain_params")
+            cfg = read_config() or {}
+            # training from an older dodging logic doesn't fit the current one
+            return cfg.get("brain_params") if cfg.get("brain_params_version") == BRAIN_VERSION else None
 
         def save(params):
             with CONFIG_LOCK:
@@ -360,10 +366,15 @@ class App:
                     cfg.pop("brain_params", None)
                 else:
                     cfg["brain_params"] = params
+                    cfg["brain_params_version"] = BRAIN_VERSION
                 save_config(cfg)
 
         SimWindow(self.root, load_params=load, save_params=save)
         self.write_log("Simulator opened: the bot's real brain playing a practice arena (1x-100x), training in the background.")
+
+    def test_play_again(self):
+        self.write_log("Test PLAY AGAIN: switch to Roblox with the GAME OVER screen showing. Checking in 3 s...")
+        self.root.after(3000, self.ctl.test_play_again)
 
     def relearn_player(self):
         self.launch("calibrate", "player")
