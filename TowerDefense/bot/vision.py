@@ -37,6 +37,7 @@ DEFAULT_TOL = [28, 14, 14]
 R_BULLET_MAX = 17.0     # red/orange/yellow balls up to this size are bullets (bullets ~10-11, mobs 24+)
 R_BOSS_MIN = 70.0       # red things bigger than this are the boss (~100); grunts are 28-38
 R_MIN = 4.0             # specks smaller than this are ignored
+R_TEXT_MAX = 15.0       # floating score text letters are smaller than this
 R_BULLET_MIN = 7.5      # smaller balls are chat emojis (the orange suns), not bullets
 R_PLAYER_BALL = (11.0, 30.0)   # the player's gray ball (~19)
 R_SAUCER = (22.0, 56.0)        # the UFO's white saucer (~37)
@@ -113,16 +114,17 @@ class Thing:
 
 
 class Detector:
-    def __init__(self, scale=2):
-        self.s = scale
+    def __init__(self, scale=None):
+        self.fixed_scale = scale  # None: pick by window size (big windows are looked at smaller)
+        self.s = scale or 2
         self.lut = build_lut()
 
     # ------------------------------------------------------------------ blobs
     def blobs(self, bgr):
         """{group name: [Blob]} in full-size pixels."""
-        s = self.s
         H, W = bgr.shape[:2]
         k = H / REF_H
+        s = self.s = self.fixed_scale or max(2, int(round(H / 480)))
         small = cv2.resize(bgr, (W // s, H // s), interpolation=cv2.INTER_NEAREST) if s > 1 else bgr
         b, g, r = cv2.split(small)
         _, fg = cv2.threshold(cv2.max(cv2.max(b, g), r), FG_LEVEL, 1, cv2.THRESH_BINARY)
@@ -171,6 +173,8 @@ class Detector:
         for b in bl["red"]:
             if id(b) in text or b.r < R_BULLET_MIN * k:
                 continue
+            if b.fill > 0.85 and b.h < 0.03 * H and b.aspect >= 1.3 and b.y > 0.85 * H:
+                continue  # the boss's health bar at the bottom
             if b.r < R_BULLET_MAX * k:
                 if b.round_ball():
                     things.append(Thing("bullet", b.x, b.y, b.r))
@@ -222,7 +226,25 @@ class Detector:
                 things.remove(t)
 
         player = find_player(bl, k, things)
-        return player, things
+        # enemies flash white when hit: a white shape without your gray ball next to it is one of them
+        for b in bl["white"]:
+            if b.r < 20 * k:
+                continue
+            if b.r <= R_SAUCER[1] * k and any(math.hypot(g.x - b.x, g.y - b.y) < b.r + g.r * 1.5 for g in bl["gray"]):
+                continue  # your saucer (your gray ball is next to it)
+            if player and math.hypot(player[0] - b.x, player[1] - b.y) < 2.5 * player[2]:
+                continue
+            if b.r > R_BOSS_MIN * k:
+                if b.aspect <= 1.6:
+                    things.append(Thing("boss", b.x, b.y, b.r))
+            elif b.solid >= 0.7:
+                things.append(Thing("grunt", b.x, b.y, b.r))
+        # the same thing found twice (e.g. a ring and the shape inside it): keep one
+        out = []
+        for t in sorted(things, key=lambda t: -t.r):
+            if not any(o.kind == t.kind and math.hypot(o.x - t.x, o.y - t.y) < 0.5 * o.r for o in out):
+                out.append(t)
+        return player, out
 
 
 def _split_pair(b):
@@ -238,7 +260,8 @@ def _text_pieces(bl, k):
     same color side by side in a row, at least one of them not ball-shaped."""
     out = set()
     for name in ("red", "orange", "yellow", "tiny", "health"):
-        pieces = [b for b in bl[name] if b.r < R_BULLET_MAX * k * 1.4]
+        # letters are small: anything as big as a tiny tank (r ~22) or a grunt is never text
+        pieces = [b for b in bl[name] if b.r < R_TEXT_MAX * k]
         pieces.sort(key=lambda b: b.bx)
         for i, a in enumerate(pieces):
             row = [a]
@@ -256,7 +279,8 @@ def _text_pieces(bl, k):
 def find_player(bl, k, things):
     """The player: the white UFO saucer with the gray ball next to it. Position = the gray ball (the
     aim line starts there). Falls back to just the saucer, or just a round gray ball (plain look)."""
-    saucers = [b for b in bl["white"] if R_SAUCER[0] * k <= b.r <= R_SAUCER[1] * k and b.solid >= 0.55]
+    saucers = [b for b in bl["white"] if R_SAUCER[0] * k <= b.r <= R_SAUCER[1] * k and b.solid >= 0.55
+               and any(math.hypot(g.x - b.x, g.y - b.y) < b.r + 2.5 * g.r for g in bl["gray"])]
     balls = [b for b in bl["gray"] if R_PLAYER_BALL[0] * k <= b.r <= R_PLAYER_BALL[1] * k and b.aspect <= 1.5]
     bosses = [t for t in things if t.kind == "boss"]
 

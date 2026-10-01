@@ -141,7 +141,11 @@ class Bot:
             frames += 1
             if time.perf_counter() - fps_t > 1:
                 r = self.runner
-                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f} fps, delay "
+                cap = getattr(io, "capture", None)
+                if cap is not None and cap.note and not getattr(self, "_noted", False):
+                    self.on_event("log", cap.note)
+                    self._noted = True
+                self.on_event("fps", f"{frames / (time.perf_counter() - fps_t):.0f} fps ({cap.method if cap else '?'}), delay "
                                      f"{1000 * (r.latency + r.input_delay):.0f} ms" +
                               (f", speed {r.player_speed:.0f}" if r.player_speed else ""))
                 frames, fps_t = 0, time.perf_counter()
@@ -175,7 +179,6 @@ class Bot:
     def _save_recording(self):
         import cv2
         import numpy as np
-        from vision import DRAW
         r = self.runner
         if r is None or not r.recording:
             self.on_event("log", "Nothing recorded yet (it records while running).")
@@ -189,7 +192,10 @@ class Bot:
             if img is None:
                 continue
             for kind, x, y, rad in info["things"]:
-                cv2.circle(img, (x // 2, y // 2), rad // 2 + 2, DRAW.get(kind, (255, 255, 255)), 1)
+                cv2.circle(img, (x // 2, y // 2), rad // 2 + 3, (255, 255, 0), 1)  # cyan: not a game color
+                if kind != "bullet":
+                    cv2.putText(img, kind, (x // 2 - rad // 2, y // 2 - rad // 2 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+                                (255, 255, 0), 1)
             if info["player"]:
                 x, y, rad = info["player"]
                 cv2.circle(img, (int(x) // 2, int(y) // 2), int(rad) // 2, (255, 255, 255), 2)

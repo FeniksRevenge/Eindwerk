@@ -46,6 +46,7 @@ class Planner:
     CROWD_WEIGHT = 40.0
     WALL = 6.0            # x R from an edge where it starts to cost
     WALL_WEIGHT = 900.0
+    CORNER_WEIGHT = 3000.0
     LAP_WEIGHT = 150.0    # how much it likes running laps around the middle (x2 with the boss there)
     CENTER_WEIGHT = 60.0
     HEALTH_BONUS = 3000.0
@@ -131,6 +132,11 @@ class Planner:
         end = P[:, -1, :]
         for d in (end[:, 0], W - end[:, 0], end[:, 1], H - end[:, 1]):
             cost += np.clip((self.WALL * R - d) / (self.WALL * R), 0, 1) ** 2 * self.WALL_WEIGHT
+        # corners trap you: extra cost when close to two edges at once
+        C = 0.25 * min(W, H)
+        near_x = np.clip((C - np.minimum(end[:, 0], W - end[:, 0])) / C, 0, 1)
+        near_y = np.clip((C - np.minimum(end[:, 1], H - end[:, 1])) / C, 0, 1)
+        cost += near_x * near_y * self.CORNER_WEIGHT
         cdist = np.hypot(end[:, 0] - W / 2, end[:, 1] - H / 2) / (0.5 * min(W, H))
         cost += cdist ** 2 * self.CENTER_WEIGHT
 

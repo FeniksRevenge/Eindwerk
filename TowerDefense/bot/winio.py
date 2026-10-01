@@ -120,21 +120,61 @@ def foreground_is(hwnd):
 # --------------------------------------------------------------------------- screenshots
 class Capture:
     """Screenshots of the Roblox window's inside on a background thread. A new one is taken as soon as
-    the bot took the previous one, so the bot always gets a fresh picture without waiting long."""
+    the bot took the previous one, so the bot always gets a fresh picture without waiting long.
+    Uses dxcam (Windows' fast Desktop Duplication, a few ms per picture) when it works, else mss."""
 
-    def __init__(self):
+    def __init__(self, fast=True):
         self.frame, self.frame_time, self.area, self.seq = None, 0.0, None, 0
         self.hwnd = None
+        self.fast = fast
+        self.method = "mss"
+        self.note = ""
         self.cond = threading.Condition()
         self.taken = threading.Event()
         self.stop = threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
 
+    def _open_dxcam(self, sct, area):
+        """A dxcam camera, if it works and gives the same picture as a normal screenshot."""
+        try:
+            import dxcam
+            cam = dxcam.create(output_color="BGR")
+        except Exception as e:
+            self.note = f"fast capture (dxcam) not available ({e}); using mss"
+            return None
+        if cam is None:
+            return None
+        box = (area["left"], area["top"], area["left"] + area["width"], area["top"] + area["height"])
+        img = None
+        for _ in range(100):  # dxcam gives None until something on screen changes
+            try:
+                img = cam.grab(region=box)
+            except Exception as e:
+                self.note = f"fast capture (dxcam) can't capture the Roblox window ({e}); using mss"
+                return None
+            if img is not None:
+                break
+            time.sleep(0.01)
+        if img is None:
+            return cam  # nothing changed for a second: can't compare, try it
+        ref = np.asarray(sct.grab(area))[:, :, :3]
+        if img.shape[:2] != ref.shape[:2]:
+            self.note = "fast capture (dxcam) gave a different size; using mss"
+            return None
+        import cv2
+        small = lambda x: cv2.GaussianBlur(cv2.resize(np.ascontiguousarray(x[:, :, :3]), (160, 90),
+                                                      interpolation=cv2.INTER_AREA), (7, 7), 0).astype(np.int16)
+        diff = np.abs(small(img) - small(ref)).max(axis=2)
+        if float(diff.mean()) > 12:
+            self.note = "fast capture (dxcam) gave a different picture (HDR / other graphics card?); using mss"
+            return None
+        return cam
+
     def _run(self):
         import mss
         sct = mss.mss()
-        next_find = 0.0
-        area = None
+        cam, cam_area = None, None
+        next_find, area, last_frame, last_new = 0.0, None, None, 0.0
         while not self.stop.is_set():
             now = time.perf_counter()
             if now >= next_find:  # the window may have moved or been resized
@@ -147,10 +187,27 @@ class Capture:
                     self.cond.notify_all()
                 time.sleep(0.2)
                 continue
+            if self.fast and cam is None and cam_area is None:
+                cam = self._open_dxcam(sct, area)  # tried once; mss if it doesn't work
+                self.method = "dxcam" if cam else "mss"
+            cam_area = dict(area)
             try:
                 t = time.perf_counter()
-                frame = np.ascontiguousarray(np.asarray(sct.grab(area))[:, :, :3])
+                frame = None
+                if cam is not None and cam_area == area:
+                    box = (area["left"], area["top"], area["left"] + area["width"], area["top"] + area["height"])
+                    img = cam.grab(region=box)
+                    if img is not None:
+                        frame = np.ascontiguousarray(img[:, :, :3])
+                    elif last_frame is not None and t - last_new < 0.15:
+                        time.sleep(0.003)  # nothing changed on screen yet
+                        continue
+                if frame is None:
+                    frame = np.ascontiguousarray(np.asarray(sct.grab(area))[:, :, :3])
+                last_frame, last_new = frame, t
             except Exception:
+                if cam is not None:  # dxcam stopped working (window moved off screen...): mss from now on
+                    cam, self.method = None, "mss"
                 next_find = 0.0
                 time.sleep(0.05)
                 continue
@@ -179,9 +236,9 @@ class Capture:
 class WindowsIO:
     """What the bot runner talks to: screenshots in, keys and mouse out (in window coordinates)."""
 
-    def __init__(self, require_focus=True):
+    def __init__(self, require_focus=True, fast_capture=True):
         self.require_focus = require_focus
-        self.capture = Capture()
+        self.capture = Capture(fast_capture)
         self.seq = 0
         self.frame_time = 0.0
         self.area = None
