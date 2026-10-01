@@ -50,7 +50,7 @@ class BotRunner:
         self.hold_time = 0.0    # how long it's been kept at its spot by that picture alone
         self.lost_report = False  # set once per run when the player is lost for 1 s (for a screenshot)
         self.lost_reported = False
-        self.frames = 0
+        self.last_frame = None
 
     def run_seconds(self):
         """How long the player survived this run (first to last sighting)."""
@@ -129,23 +129,27 @@ class BotRunner:
         self.last_t = now
 
         frame = self.io.grab()
+        self.last_frame = frame
         # When the screenshot was taken (the capture thread knows exactly), else "now".
         t_grab = getattr(self.io, "frame_time", 0.0) or self.io.now()
         h, w = frame.shape[:2]
         dets = self.detector.detect(frame)
         found = self._pick_player(dets["player"], now)
-        self.frames += 1
-        # The GAME OVER screen means dead (checked every frame while the player is missing, else now and then).
-        if found is None or self.frames % 10 == 0:
-            if is_game_over(frame):
-                if self.game_over_since is None:
-                    self.game_over_since = now
-                if self.seen_player and now - self.game_over_since >= 0.4:
-                    self.release()
-                    self.death_reason = "game over screen"
-                    return "dead"
-            else:
-                self.game_over_since = None
+        # The GAME OVER screen means dead. Nothing on it is the player (its white letters can look like it).
+        if is_game_over(frame):
+            found = None
+            dets["player"] = []
+            if self.game_over_since is None:
+                self.game_over_since = now
+            if self.seen_player and now - self.game_over_since >= 0.4:
+                self.release()
+                self.death_reason = "game over screen"
+                return "dead"
+            if not self.seen_player and now - self.game_over_since >= 3.0:
+                self.game_over_since = now
+                return "game_over_waiting"  # (after auto restart) the click didn't start a new game
+        else:
+            self.game_over_since = None
         held = False
         if found is None and self.template is not None and self.player is not None and self.hold_time < HOLD_MAX:
             # Not recognized, but is the player still right there (e.g. standing still)? Compare with

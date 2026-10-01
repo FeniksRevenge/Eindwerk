@@ -154,6 +154,9 @@ class App:
         self.fast_var = tk.BooleanVar(value=cfg.get("fast_capture", True))
         ttk.Checkbutton(wrap, text="Fast screen capture (dxcam); turn off if it can't find you", variable=self.fast_var,
                         command=self.save_settings).pack(anchor="w", pady=(2, 0))
+        self.restart_var = tk.BooleanVar(value=cfg.get("auto_restart", False))
+        ttk.Checkbutton(wrap, text="Auto restart: click PLAY AGAIN after a game over", variable=self.restart_var,
+                        command=self.save_settings).pack(anchor="w", pady=(2, 0))
         self.shots_on_var = tk.BooleanVar(value=cfg.get("auto_shots", True))
         ttk.Checkbutton(wrap, text="Take pictures automatically while the bot plays", variable=self.shots_on_var,
                         command=self.save_settings).pack(anchor="w", pady=(2, 6))
@@ -474,6 +477,7 @@ class App:
                "auto_shots": bool(self.shots_on_var.get()),
                "overlay": bool(self.overlay_var.get()),
                "fast_capture": bool(self.fast_var.get()),
+               "auto_restart": bool(self.restart_var.get()),
                "tolerance": [round(v * 30 / 14), v, v]}
         if any(cfg.get(k) != val for k, val in new.items()):
             cfg.update(new)

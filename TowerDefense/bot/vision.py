@@ -239,14 +239,48 @@ def set_main_player(cfg, lab, radius):
 def is_game_over(bgr):
     """The GAME OVER screen: the whole background turns dark red and a big dark gray panel (score, top
     scores, PLAY AGAIN) sits in the middle. A red hit flash or a big red boss doesn't look like that."""
-    small = cv2.resize(bgr, (160, 90), interpolation=cv2.INTER_AREA).astype(np.int16)
-    border = np.concatenate([small[:10].reshape(-1, 3), small[-10:].reshape(-1, 3),
-                             small[:, :12].reshape(-1, 3), small[:, -12:].reshape(-1, 3)])
+    h, w = bgr.shape[:2]
+    step = max(1, min(h, w) // 90)  # look at a sparse grid of pixels only: cheap enough for every frame
+    bh, bw = h // 9, w // 13
+    border = np.concatenate([bgr[:bh:step, ::step, :3].reshape(-1, 3), bgr[h - bh::step, ::step, :3].reshape(-1, 3),
+                             bgr[::step, :bw:step, :3].reshape(-1, 3), bgr[::step, w - bw::step, :3].reshape(-1, 3)])
     b, g, r = np.median(border, axis=0)
     if not (r >= 25 and r - max(b, g) >= 15):
         return False  # background isn't dark red
-    cb, cg, cr = np.median(small[25:70, 55:105].reshape(-1, 3), axis=0)
+    cb, cg, cr = np.median(bgr[int(h * .28):int(h * .78):step, int(w * .34):int(w * .66):step, :3].reshape(-1, 3), axis=0)
     return 12 <= max(cb, cg, cr) <= 70 and max(cb, cg, cr) - min(cb, cg, cr) <= 14  # dark gray panel
+
+
+def find_play_again(bgr):
+    """Center (x, y) of the PLAY AGAIN button on the GAME OVER screen, in frame pixels, or None.
+    Finds the dark gray panel in the middle, then the left one of the two buttons at its bottom (a bit
+    lighter gray than the panel). If the buttons can't be told apart, uses where PLAY AGAIN sits on the
+    panel (measured from a real screenshot)."""
+    h, w = bgr.shape[:2]
+    s = 4
+    small = cv2.resize(bgr, (w // s, h // s), interpolation=cv2.INTER_AREA).astype(np.int16)
+    mx, mn = small.max(axis=2), small.min(axis=2)
+    neutral = ((mx - mn) <= 14) & (mx >= 12) & (mx <= 95)
+    mask = cv2.morphologyEx(neutral.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    n, _labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n < 2:
+        return None
+    i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    px, py, pw, ph, area = (int(v) for v in stats[i])
+    if area < 0.08 * mask.size or not (px < small.shape[1] / 2 < px + pw):
+        return None  # no big panel in the middle
+    panel = np.median(mx[py:py + ph, px:px + pw][neutral[py:py + ph, px:px + pw]])
+    y0 = py + int(ph * 0.65)
+    reg_mx = mx[y0:py + ph, px:px + pw]
+    lighter = (reg_mx >= panel + 7) & (reg_mx <= panel + 70) & neutral[y0:py + ph, px:px + pw]
+    lighter = cv2.morphologyEx(lighter.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    m, _l, bs, bc = cv2.connectedComponentsWithStats(lighter, connectivity=8)
+    buttons = [(bc[j][0], bc[j][1]) for j in range(1, m)
+               if bs[j, cv2.CC_STAT_WIDTH] > 0.2 * pw and bs[j, cv2.CC_STAT_HEIGHT] > 0.04 * ph]
+    if buttons:
+        bx, by = min(buttons)  # the left one
+        return ((px + bx) * s + s / 2, (y0 + by) * s + s / 2)
+    return ((px + 0.279 * pw) * s, (py + 0.880 * ph) * s)
 
 
 def _bin_lab():

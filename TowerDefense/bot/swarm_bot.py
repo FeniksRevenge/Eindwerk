@@ -25,7 +25,8 @@ import numpy as np
 
 from phototrainer import list_photos, train_semi
 from runner import BotRunner
-from vision import CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, measure_blob, set_main_player
+from vision import (CLASS_HELP, CLASSES, DEFAULT_TOLERANCE, PRESET, Detector, annotate, find_play_again, measure_blob,
+                    set_main_player)
 
 # When packed into SwarmBot.exe, keep config.json next to the exe (not in its temp folder).
 FROZEN = getattr(sys, "frozen", False)
@@ -245,6 +246,16 @@ class WindowsIO:
 
     def aim(self, x, y):
         mouse_move(self.region["left"] + x, self.region["top"] + y)
+
+    def click(self, x, y):
+        """Left click at (x, y) of the play area (e.g. the PLAY AGAIN button)."""
+        mouse_move(self.region["left"] + x, self.region["top"] + y)
+        time.sleep(0.08)
+        mouse_button(True)
+        time.sleep(0.06)
+        mouse_button(False)
+        time.sleep(0.05)
+        self.down = False
 
     def mouse(self, down):
         """Hold or release the fire button (Space by default, or left mouse)."""
@@ -581,6 +592,7 @@ class BotController:
         bot = None
         capture_logged = blind_shot = False
         auto_every, next_auto = 0, 0.0
+        auto_restart, restarts, clicks = False, 0, 0
         frames, fps_t = 0, time.perf_counter()
         last_status = None
         while not self._quit.is_set():
@@ -601,6 +613,8 @@ class BotController:
                         blind_shot = False
                         last_status = None
                         auto_every = float(cfg.get("auto_shot_every", 10)) if cfg.get("auto_shots", True) else 0
+                        auto_restart = bool(cfg.get("auto_restart", False))
+                        restarts, clicks = 0, 0
                         next_auto = time.perf_counter() + auto_every
                         self.on_event("status", "Running")
                         self.on_event("log", "Started.")
@@ -629,12 +643,38 @@ class BotController:
                 self.on_event("status", "Error")
                 self.on_event("log", f"Error, stopped: {e}")
                 continue
+            if status in ("dead", "game_over_waiting"):
+                auto_restart = bool(read_config_or_empty().get("auto_restart", False))  # can change mid-run
+            if status == "dead" and auto_restart and bot.death_reason == "game over screen":
+                secs = bot.run_seconds()
+                if self._play_again(bot):
+                    restarts += 1
+                    clicks = 1
+                    bot.reset()
+                    self.on_event("log", f"Game over after {secs:.0f}s. Auto restart: clicked PLAY AGAIN "
+                                         f"(restart {restarts}).")
+                    continue
+                self.on_event("log", "Auto restart: couldn't find the PLAY AGAIN button (or Roblox isn't in front).")
+            if status == "game_over_waiting":  # clicked PLAY AGAIN, but the GAME OVER screen is still there
+                if auto_restart and clicks < 3 and self._play_again(bot):
+                    clicks += 1
+                    self.on_event("log", f"Auto restart: GAME OVER screen still there, clicked PLAY AGAIN again ({clicks}/3).")
+                    continue
+                if auto_restart:
+                    status = "dead"
+                    bot.death_reason = "PLAY AGAIN didn't start a new game"
+                else:
+                    status = "waiting"
             if status == "dead":
                 self.running = False
                 bot.io.close()
                 self.on_event("status", "Stopped (died)")
-                self.on_event("log", f"Died ({bot.death_reason}) after {bot.run_seconds():.0f}s. "
-                                     "Stopped. Press * to start again.")
+                if bot.death_reason.startswith("PLAY AGAIN"):
+                    self.on_event("log", "Auto restart: clicked PLAY AGAIN 3 times but no new game started. "
+                                         "Stopped. Press * to start again.")
+                else:
+                    self.on_event("log", f"Died ({bot.death_reason}) after {bot.run_seconds():.0f}s. "
+                                         "Stopped. Press * to start again.")
                 continue
             # Periodic photos for the photo trainer (capped so the folder can't fill the disk).
             if auto_every > 0 and status == "ok" and time.perf_counter() >= next_auto:
@@ -653,10 +693,10 @@ class BotController:
                                      ": saved a screenshot of what the bot saw. If you were really there, send it "
                                      "(the bot keeps playing and only stops at the GAME OVER screen).")
             # Never found the player in the first 3 s: save what the bot sees (once per run) to check it.
-            if not blind_shot and status == "waiting" and bot.waiting_time() > 3.0:
+            if not blind_shot and status == "waiting" and bot.waiting_time() > 3.0 and bot.game_over_since is None:
                 blind_shot = True
                 self._take_screenshot(bot)
-                self.on_event("log", "Can't find you (the gray ball) for 3 s. Saved a screenshot of what the bot sees: "
+                self.on_event("log", "Can't find you (the gray ball / white UFO) for 3 s. Saved a screenshot of what the bot sees: "
                                      "open it (Open screenshots folder). If you're on it but not circled in the _bot.png, "
                                      "click 'Use preset colors' or 'Clear ignore list', or try turning off fast capture.")
             shown = "Waiting for the player to appear..." if status == "waiting" else "Running"
@@ -671,6 +711,16 @@ class BotController:
         if bot is not None:
             bot.release()
 
+
+    def _play_again(self, bot):
+        """Click the PLAY AGAIN button on the GAME OVER screen. Returns True if it clicked."""
+        frame = getattr(bot, "last_frame", None)
+        pos = find_play_again(frame) if frame is not None else None
+        if pos is None or not bot.io.focused():
+            return False
+        bot.release()
+        bot.io.click(*pos)
+        return True
 
     def _take_screenshot(self, bot):
         """Grab what the bot sees right now and save it on another thread, so play isn't interrupted."""

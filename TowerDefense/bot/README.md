@@ -8,6 +8,8 @@ it holds WASD to dodge, moves the mouse to aim and holds **Space** to shoot (swi
 - **`/`** saves a screenshot of what the bot sees (you keep playing; see below)
 - It keeps playing until you die: it **stops by itself when the GAME OVER screen appears** (dark red background
   with the score panel). As a backup it also stops if it can't see you at all for 30 seconds (setting).
+- **Auto restart** (setting, off by default): after a game over it clicks **PLAY AGAIN** and keeps playing.
+  If 3 clicks don't start a new game, it stops.
 - It only sends keys/mouse while the **Roblox window is in front**, so it won't type into other apps
 
 Windows only.
@@ -160,6 +162,7 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
 | `downscale` | 2 = look at half resolution (faster). 1 = full resolution (more accurate, slower). |
 | `death_timeout` | Backup: seconds it may not see you before it stops anyway (at least 20). It normally stops at the GAME OVER screen. |
 | `require_focus` | `true` = only send input while Roblox is the active window. |
+| `auto_restart` | `true` = click PLAY AGAIN after a game over and keep playing. |
 | `fast_capture` | `true` = fast dxcam capture (checked against a normal screenshot at start), `false` = always mss. |
 | `fire_with` | `"space"` (default) or `"mouse"` (hold left click) to shoot. |
 | `expand` | Danger size per kind, e.g. `{"boss": 1.5}`: the bot treats it as 1.5x bigger and keeps more distance. Set it in the app under **Danger size of**. |
