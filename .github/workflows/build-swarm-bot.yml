@@ -32,7 +32,7 @@ jobs:
           --paths TowerDefense/bot
           --hidden-import pynput.keyboard._win32
           --hidden-import pynput.mouse._win32
-          TowerDefense/bot/gui.py
+          TowerDefense/bot/app.py
 
       - name: Self-test the exe
         shell: pwsh
@@ -53,6 +53,6 @@ jobs:
           tag_name: swarm-bot-build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           name: SwarmBot build ${{ github.run_number }}
-          body: Download SwarmBot.exe below and put it in its own folder (it saves config.json next to itself).
+          body: Download SwarmBot.exe below and put it in its own folder (it saves its settings and pictures next to itself).
           files: dist/SwarmBot.exe
           make_latest: true

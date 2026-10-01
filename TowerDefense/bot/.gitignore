@@ -1,7 +1,5 @@
 config.json
-config.json.tmp
 __pycache__/
-screenshots/
+pictures/
 selftest.txt
-sim_params.json
-*.png
+*.mp4

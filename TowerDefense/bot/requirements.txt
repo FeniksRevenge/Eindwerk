@@ -2,4 +2,3 @@ opencv-python>=4.8
 numpy>=1.24
 mss>=9.0
 pynput>=1.7
-dxcam>=0.0.5; sys_platform == "win32"
