@@ -26,7 +26,7 @@ LEG1, LEG2 = 5, 10                     # steps of DT: 0.25 s, then 0.5 s
 
 # How fast each kind can walk, as a fraction of your speed (used until it's been measured), and
 # whether it walks at you.
-MOB_SPEED = {"grunt": 0.88, "tiny": 1.25, "tank": 0.5, "yellow": 0.6, "boss": 0.6, "shooter": 0.7}
+MOB_SPEED = {"grunt": 0.88, "tiny": 1.0, "tank": 0.5, "yellow": 0.6, "boss": 0.6, "shooter": 0.7}
 CHASERS = {"grunt", "tiny", "tank", "yellow", "boss"}
 BOSS_KEEP = 0.33    # distance to keep from the boss, as a fraction of the arena's height
 # Room to keep (x R) and how much to dislike being near each kind.

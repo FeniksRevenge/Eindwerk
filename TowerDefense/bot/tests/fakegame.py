@@ -4,7 +4,7 @@ A fake version of the Roblox game, drawn with pieces cut from real screenshots, 
 
 Rules (as described by the player):
   - you: stop instantly, HP 10, every hit -2 HP, briefly invincible after a hit; a bit faster than grunts
-  - grunts walk at you (0.88x your speed); tiny tanks are fast; tanks are slow and split into 3 tiny ones
+  - grunts walk at you (0.88x your speed); tiny tanks are as fast as you; tanks are slow and split into 3 tiny ones
   - orange shooters keep their distance and fire single shots at you (straight lines)
   - yellow mobs walk at you and fire rotating rings of bullets
   - boss wave: only the boss; 4 bullet rings, then it summons 3 grunts; slow, sometimes rushes
@@ -66,7 +66,7 @@ class Obj:
 
 RADIUS = {"grunt": 30, "tiny": 24, "tank": 55, "shooter": 27, "yellow": 33, "boss": 100}
 HP = {"grunt": 3, "tiny": 1, "tank": 10, "shooter": 3, "yellow": 4, "boss": 120}
-SPEED = {"grunt": 0.88, "tiny": 1.25, "tank": 0.45, "shooter": 0.6, "yellow": 0.55, "boss": 0.3}
+SPEED = {"grunt": 0.88, "tiny": 1.0, "tank": 0.45, "shooter": 0.6, "yellow": 0.55, "boss": 0.3}
 
 
 class Game:
