@@ -180,6 +180,15 @@ While the bot runs it also takes a photo **automatically every 10 seconds**. Tur
   decisions, about 30% less work).
 - The bot plans from where you'll be when its keys land, so its reaction delay is accounted for.
 
+## Dodging
+- The planner checks the **closest approach during each time step**, not only at sampled moments, so a fast
+  bullet coming straight at you can't slip "through" between two checks. In the simulator this halved the
+  hits (3.0 -> 1.5 per minute with the bot's perfect view).
+- Anything that flies at bullet speed is dodged like a bullet, whatever it was taken for (two red bullets
+  touching can look like a grunt); touching bullets are reported as one bullet-sized danger.
+- A kind of thing you never calibrated (e.g. the yellow mob's bullets) uses the preset colors instead of
+  being invisible.
+
 ## Floating text
 Score popups like **+10 / +25** in red, orange, purple, yellow or gray are ignored: a row of bullet-sized
 pieces where at least one isn't a round ball (a "1", a "+", a "2") is text. A lone "+" is too thin to be a

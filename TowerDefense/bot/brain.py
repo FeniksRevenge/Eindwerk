@@ -25,6 +25,7 @@ STEPS2 = np.arange(1, 9) * 0.05    # follow-up move: another 0.4 s
 DEFAULT_PLAYER_SPEED = 260.0
 DEFAULT_MOB_SPEED = {"grunt": 70.0, "runner": 90.0, "tank": 42.0, "tank_mini": 110.0, "shooter": 105.0, "boss": 48.0}
 FAST = 250.0  # game units/s: an "orange shooter" moving faster than this is really an orange bullet
+BULLETLIKE = 170.0  # game units/s: mobs are slower than this (fastest: tiny tanks ~110), bullets faster
 
 
 class Brain:
@@ -72,9 +73,17 @@ class Brain:
         cost = np.zeros(P.shape[:2])
 
         if len(bullets["pos"]):
-            bp = bullets["pos"][None] + bullets["vel"][None] * T[:, None, None]          # (S, B, 2)
-            dd = P[:, :, :, None, :] - bp[None, None]
-            gap = np.sqrt(dd[..., 0] ** 2 + dd[..., 1] ** 2) - pr - bullets["r"]
+            # Closest approach during each time step, not just at the sampled moments: a fast bullet
+            # coming head-on moves further per step than the hit distance and could slip "through".
+            T0 = np.concatenate([[t0 + latency], T])                                         # (S+1,)
+            P0 = np.concatenate([np.broadcast_to(start[:, None, None, :], (P.shape[0], 9, 1, 2)), P], axis=2)
+            bp = bullets["pos"][None] + bullets["vel"][None] * T0[:, None, None]         # (S+1, B, 2)
+            D = P0[:, :, :, None, :] - bp[None, None]                                    # (N, 9, S+1, B, 2)
+            A, seg = D[:, :, :-1], D[:, :, 1:] - D[:, :, :-1]
+            u = np.clip(-(A[..., 0] * seg[..., 0] + A[..., 1] * seg[..., 1]) /
+                        (seg[..., 0] ** 2 + seg[..., 1] ** 2 + 1e-9), 0.0, 1.0)
+            cx, cy = A[..., 0] + u * seg[..., 0], A[..., 1] + u * seg[..., 1]
+            gap = np.sqrt(cx ** 2 + cy ** 2) - pr - bullets["r"]
             m = self.BULLET_MARGIN
             near = (m - np.maximum(gap, 0)) ** 2 * 4
             c = np.where(gap < 0, self.BULLET_HIT, np.where(gap < m, near, 0.0))
@@ -120,8 +129,12 @@ class Brain:
         pr = REF_R
         speed = player_speed / k
 
-        mob_t = [t for t in tracks if t.kind in DEFAULT_MOB_SPEED]
-        bul_t = [t for t in tracks if t.kind == "enemy_bullet"]
+        # Anything (not the boss) flying at bullet speed is dodged like a bullet, whatever it was taken
+        # for (e.g. two red bullets touching can look like a grunt).
+        flying = [t for t in tracks if t.kind in DEFAULT_MOB_SPEED and t.kind != "boss" and t.age > 2
+                  and math.hypot(t.vx, t.vy) / k > BULLETLIKE]
+        mob_t = [t for t in tracks if t.kind in DEFAULT_MOB_SPEED and t not in flying]
+        bul_t = [t for t in tracks if t.kind == "enemy_bullet"] + flying
         pickups = [t for t in tracks if t.kind == "health"]
         mobs = {
             "pos": np.array([[t.x / k, t.y / k] for t in mob_t]).reshape(-1, 2),

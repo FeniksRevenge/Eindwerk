@@ -323,7 +323,14 @@ class Detector:
         # rarely give identical numbers), so one red blob is never reported as two things.
         self.groups = []  # [([lab, ...], [(name, radius), ...])]
         tol = np.array(self.tol)
-        for name, c in cfg["colors"].items():
+        # Anything never calibrated uses the preset (an uncalibrated kind would be invisible).
+        colors = dict(cfg.get("colors", {}))
+        reg = cfg.get("region")
+        scale = reg["height"] / PRESET["ref_height"] if reg and reg.get("height") else 1.0
+        for name, p in PRESET["colors"].items():
+            if not (colors.get(name) and colors[name].get("lab")):
+                colors[name] = {"lab": list(p["lab"]), "radius": round(p["radius"] * scale, 1)}
+        for name, c in colors.items():
             if not (c and c.get("lab") and float(c.get("radius", 0)) > 0):
                 continue
             lab = np.array(c["lab"])
@@ -502,7 +509,12 @@ class Detector:
                 cls, r_exp = min(members, key=lambda m: abs(math.log(max(r, 0.5) / m[1])))
                 if r < smallest * 0.45:
                     continue  # specks and explosion particles
-                if cls in BULLET_CLASSES and r > r_exp * 2:
+                # Two bullets touching look like one long blob that's about the size of a mob: still bullets.
+                b_r = min((m[1] for m in members if m[0] in BULLET_CLASSES), default=None)
+                if (b_r and cls not in BULLET_CLASSES and cls != "player" and r <= 2.3 * b_r
+                        and max(box[2], box[3]) >= 1.5 * min(box[2], box[3])):
+                    cls, r_exp = next(m for m in members if m[0] in BULLET_CLASSES and m[1] == b_r)
+                if cls in BULLET_CLASSES and r > r_exp * 2.4:
                     continue
                 if cls == "player" and not (self.player_r_range[0] <= r <= self.player_r_range[1]):
                     continue  # HUD text is gray too, but much smaller than the player
