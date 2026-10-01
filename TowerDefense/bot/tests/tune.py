@@ -122,31 +122,49 @@ def write_tuned(values, note):
         f.write("\n".join(lines) + "\n")
 
 
+STATE = os.path.join(HERE, ".tune_state.pkl")  # so a restart carries on where it was
+
+
 def tune(generations=30):
+    import pickle
     import cma
     base = _base_values()
     pool = Pool(os.cpu_count())
-    es = cma.CMAEvolutionStrategy([0.0] * len(planner.TUNABLE), 0.3,
-                                  {"bounds": [-1, 1], "popsize": 12, "seed": 1, "verbose": -9})
-    best, best_x = None, None
-    for gen in range(generations):
+    check = [5000 + i for i in range(6)]
+    if os.path.exists(STATE):
+        with open(STATE, "rb") as f:
+            es, gen0, best, best_x, f_base = pickle.load(f)
+        print(f"carrying on from generation {gen0}", flush=True)
+    else:
+        es = cma.CMAEvolutionStrategy([0.0] * len(planner.TUNABLE), 0.3,
+                                      {"bounds": [-1, 1], "popsize": 12, "seed": 1, "verbose": -9})
+        gen0, best, best_x = 0, None, None
+        f_base = score(base, check, pool)
+        print(f"hand-picked values on the 18 check games: {f_base:.2f} hits/min", flush=True)
+    for gen in range(gen0, generations):
         seeds = [1000 + gen * 10 + i for i in range(3)]  # new games every generation: no learning them by heart
         xs = es.ask()
         fs = [score(to_values(x, base), seeds, pool) for x in xs]
         es.tell(xs, fs)
-        m = es.mean
         print(f"gen {gen}: best {min(fs):.2f} avg {sum(fs) / len(fs):.2f} hits/min", flush=True)
         if gen % 5 == 4 or gen == generations - 1:
-            # the middle of the search is the best guess; check it against the hand-picked values
-            check = [5000 + i for i in range(6)]
-            f_mean = score(to_values(m, base), check, pool)
-            print(f"   current guess on 18 new games: {f_mean:.2f} hits/min", flush=True)
-            if best is None or f_mean < best:
-                best, best_x = f_mean, list(m)
-    vals = to_values(best_x, base)
-    write_tuned(vals, f"{generations} generations, {best:.2f} hits/min on its check games")
-    for n in planner.TUNABLE:
-        print(f"  {n:24s} {base[n]:>8.3g} -> {vals[n]:.3g}")
+            # the middle of the search is the best guess; check it on the same games as the hand-picked values
+            f_mean = score(to_values(es.mean, base), check, pool)
+            print(f"   current guess on the 18 check games: {f_mean:.2f} hits/min (hand-picked {f_base:.2f})",
+                  flush=True)
+            if f_mean < f_base and (best is None or f_mean < best):
+                best, best_x = f_mean, list(es.mean)
+                write_tuned(to_values(best_x, base), f"generation {gen + 1}, {best:.2f} hits/min on its check "
+                                                     f"games vs {f_base:.2f} hand-picked")
+        with open(STATE, "wb") as f:
+            pickle.dump((es, gen + 1, best, best_x, f_base), f)
+    if best_x is None:
+        print("nothing beat the hand-picked values", flush=True)
+    else:
+        vals = to_values(best_x, base)
+        for n in planner.TUNABLE:
+            print(f"  {n:24s} {base[n]:>8.3g} -> {vals[n]:.3g}", flush=True)
+    os.remove(STATE)
     pool.close()
 
 
