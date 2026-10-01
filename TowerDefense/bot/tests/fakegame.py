@@ -131,8 +131,8 @@ class Game:
         dx = ("right" in self.keys) - ("left" in self.keys)
         dy = ("down" in self.keys) - ("up" in self.keys)
         n = math.hypot(dx, dy) or 1
-        if dx or dy:
-            self.ufo_ang = math.degrees(math.atan2(dy, dx))
+        if self.aim is not None:  # the UFO faces the mouse
+            self.ufo_ang = math.degrees(math.atan2(self.aim[1] - self.py, self.aim[0] - self.px))
         self.px = min(max(self.px + dx / n * V * dt, 20), W - 20)
         self.py = min(max(self.py + dy / n * V * dt, 20), H - 20)
 
@@ -231,7 +231,7 @@ class Game:
         # hits (invincible for 1 s after a hit); hit size = the gray ball
         if self.t - self.last_hit > 1.0:
             for o in self.mobs + self.bullets:
-                if math.hypot(o.x - self.px, o.y - self.py) < o.r + 19:
+                if self.body_gap(o) < 0:
                     self.hits += 1
                     self.hit_log.append((round(self.t, 1), o.kind + ("/" + o.src if o.src else "")))
                     self.hp -= 2
@@ -239,6 +239,18 @@ class Game:
                     if self.hp <= 0:
                         self.dead = True
                     break
+
+    def body_gap(self, o):
+        """Distance from o to your body: the ball (r 19) and the saucer behind it, as an oval
+        (as measured on the real game: 0.35 R behind the ball, 1.0 R long, 1.55 R wide, R = 28)."""
+        a = math.radians(self.ufo_ang)
+        fx, fy = math.cos(a), math.sin(a)
+        cx, cy = self.px - fx * 0.35 * 28, self.py - fy * 0.35 * 28
+        vx, vy = o.x - cx, o.y - cy
+        n = math.hypot(vx, vy) or 1e-9
+        c = (vx * fx + vy * fy) / n
+        reach = 1 / math.sqrt(c * c / 28.0 ** 2 + (1 - c * c) / (1.55 * 28) ** 2)
+        return n - reach - o.r
 
     # ------------------------------------------------------------------ the picture
     def render(self):
@@ -263,7 +275,7 @@ class Game:
             cv2.circle(img, (int(self.aim[0]), int(self.aim[1])), 12, (60, 60, 60), 1)
         blink = (self.t - self.last_hit) < 1.0 and int(self.t * 10) % 2 == 0
         if not blink:
-            ufo = rotated(sprite("ufo"), -self.ufo_ang + 90, center=(35, 51))
+            ufo = rotated(sprite("ufo"), -self.ufo_ang + 180, center=(35, 51))
             paste(img, ufo, self.px, self.py)
         # HUD
         for name, x, y in (("hud_hp", 40, 40), ("hud_score", 1495, 40), ("hud_hints", 395, 1055)):

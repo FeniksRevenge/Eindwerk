@@ -36,6 +36,11 @@ CROWD = {"grunt": 1.0, "tiny": 1.2, "tank": 1.2, "yellow": 2.0, "shooter": 1.3, 
 SPAWN_PRIORITY = 1.1   # prefire at warning rings: before tanks/boss, after things already closing in
 AIM_PRIORITY = {"yellow": 3.0, "shooter": 2.0, "tiny": 1.4, "grunt": 1.3, "tank": 1.0, "boss": 1.0}
 
+# Your body: the gray ball plus the white saucer, which sits on the side away from the mouse (the UFO
+# turns to face where you aim). As an oval around the ball, in R: centered BODY_BACK behind the ball,
+# BODY_LONG long along the aim line, BODY_WIDE across it (measured on recordings).
+BODY_BACK, BODY_LONG, BODY_WIDE = 0.35, 1.0, 1.55
+
 HIT_BULLET = 1e6
 HIT_MOB = 5e5
 
@@ -85,11 +90,23 @@ class Planner:
         w = 1.0 + np.clip(0.8 - T, 0, None)  # a hit soon is worse than one later
         cost = np.zeros(81)
 
-        bullets = [t for t in tracks if t.kind == "bullet"]
         mobs = [t for t in tracks if t.kind in MOB_SPEED]
-        health = [t for t in tracks if t.kind == "health"]
         spawns = [t for t in tracks if t.kind == "spawn"]
-        reach = V * T[-1] + R
+        aim_pt = self.aim(x, y, R, V, mobs, spawns)
+        fx, fy = (aim_pt[0] - x, aim_pt[1] - y) if aim_pt is not None else (0.0, -1.0)
+        fn = math.hypot(fx, fy) or 1.0
+        face = np.array([fx / fn, fy / fn])
+        body = P - face * BODY_BACK * R                    # center of the oval along every plan
+
+        def size(v):
+            """Your body's reach (px) in the direction of the vectors v (..., 2)."""
+            n = np.sqrt((v ** 2).sum(-1)) + 1e-9
+            c = (v @ face) / n
+            return 1.0 / np.sqrt(c * c / (BODY_LONG * R) ** 2 + (1 - c * c) / (BODY_WIDE * R) ** 2)
+
+        bullets = [t for t in tracks if t.kind == "bullet"]
+        health = [t for t in tracks if t.kind == "health"]
+        reach = V * T[-1] + 2 * R
 
         # --- bullets: closest approach during every step (a fast bullet can't slip between checks)
         if bullets:
@@ -98,11 +115,11 @@ class Planner:
             b = b[far < self.BULLET_MARGIN * R]
             if len(b):
                 bp = b[None, :, :2] + b[None, :, 2:4] * (T + latency)[:, None, None]       # (16, B, 2)
-                D = P[:, :, None, :] - bp[None]                                            # (81, 16, B, 2)
+                D = body[:, :, None, :] - bp[None]                                         # (81, 16, B, 2)
                 A, seg = D[:, :-1], D[:, 1:] - D[:, :-1]
                 u = np.clip(-(A * seg).sum(-1) / ((seg * seg).sum(-1) + 1e-9), 0, 1)
                 closest = A + u[..., None] * seg
-                gap = np.sqrt((closest ** 2).sum(-1)) - R - b[None, None, :, 4]           # (81, 15, B)
+                gap = np.sqrt((closest ** 2).sum(-1)) - size(closest) - b[None, None, :, 4]  # (81, 15, B)
                 m = self.BULLET_MARGIN * R
                 wt = w[1:][None, :, None]
                 cost += (np.where(gap < 0, HIT_BULLET, 0.0) * wt).sum(axis=(1, 2))
@@ -127,7 +144,8 @@ class Planner:
             chase_pos = mp[None, None] + diff / dist[..., None] * walked[..., None]
             drift_pos = (mp[None] + mv[None] * (T + latency)[:, None, None])[None]         # (1, 16, M, 2)
             pos = np.where(chase[None, None, :, None], chase_pos, drift_pos)
-            gap = np.sqrt(((P[:, :, None, :] - pos) ** 2).sum(-1)) - R - mr[None, None]
+            rel = body[:, :, None, :] - pos
+            gap = np.sqrt((rel ** 2).sum(-1)) - size(rel) - mr[None, None]
             cost += (np.where(gap < 0, HIT_MOB, 0.0) * w[None, :, None]).sum(axis=(1, 2))
             near = np.clip((margin[None, None] - gap) / margin[None, None], 0, 1) ** 2 * self.NEAR_MOB
             cost += (near * w[None, :, None]).sum(axis=(1, 2))
@@ -186,9 +204,10 @@ class Planner:
         cost += (1 - (DIRS[second] * pref1[first]).sum(-1)) * lap * 0.5
 
         cost += np.where(first != self.prev, self.TURN_COST, 0.0)
+        self.last_cost = cost
         best = int(np.argmin(cost))
         self.prev = int(first[best])
-        return KEYS[self.prev], self.aim(x, y, R, V, mobs, spawns)
+        return KEYS[self.prev], aim_pt
 
     def _lap_dir(self, p, W, H):
         """Direction of a lap around the middle (an ellipse at 1/3 of the arena), steering back onto it."""
