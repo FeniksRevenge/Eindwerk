@@ -9,3 +9,4 @@ tests/.tune_state.pkl
 tests/.tune.log
 practiced.json
 practiced.json.tmp
+diamond_config.json

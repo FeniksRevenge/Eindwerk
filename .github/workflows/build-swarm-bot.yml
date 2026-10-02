@@ -45,10 +45,28 @@ jobs:
           if ($p.ExitCode -ne 0) { exit 1 }
           Remove-Item dist\selftest.txt
 
+      - name: Build DiamondBot.exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name DiamondBot
+          --paths TowerDefense/bot
+          --hidden-import pynput.keyboard._win32
+          --hidden-import pynput.mouse._win32
+          TowerDefense/bot/diamond_app.py
+
+      - name: Self-test DiamondBot.exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\DiamondBot.exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content dist\selftest.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+          Remove-Item dist\selftest.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: SwarmBot
-          path: dist/SwarmBot.exe
+          path: |
+            dist/SwarmBot.exe
+            dist/DiamondBot.exe
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -56,6 +74,8 @@ jobs:
           tag_name: swarm-bot-build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           name: SwarmBot build ${{ github.run_number }}
-          body: Download SwarmBot.exe below and put it in its own folder (it saves its settings and pictures next to itself).
-          files: dist/SwarmBot.exe
+          body: Download SwarmBot.exe or DiamondBot.exe below and put it in its own folder (it saves its settings and pictures next to itself).
+          files: |
+            dist/SwarmBot.exe
+            dist/DiamondBot.exe
           make_latest: true

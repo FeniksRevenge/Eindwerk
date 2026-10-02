@@ -81,3 +81,20 @@ turns HDR off (the screen flickers once) and turns it back on when you stop the 
   test the whole bot (`python tests/fakegame.py 60 3 0.12` = 3 games of 60 s with 0.12 s input delay).
 
 Automating Roblox is against Roblox's Terms of Use; using this can get the account banned.
+
+# Diamond Bot
+
+https://github.com/FeniksRevenge/Eindwerk/releases/latest/download/DiamondBot.exe
+
+Holds the left mouse button in Roblox. When a light-blue diamond shows up in the hay (also a small or
+half-hidden one), it moves the cursor to it, lets go of the left button, holds it again and moves the
+cursor back to where it was. A diamond that doesn't go away after 3 tries is left alone for 10 s.
+
+1. Open Roblox at the hay bales, put the mouse where it should hold.
+2. Press **`*`** (or Start); **`-`** stops (and lets go of the button). **`/`** saves a screenshot of what
+   it sees with the diamonds it found circled (`pictures/diamond_..._found.png`): send it if it misses
+   diamonds or clicks on something else.
+
+It only works while Roblox is the window in front (setting), keeps Windows awake and wiggles the mouse by
+1 pixel every minute so Roblox doesn't kick you for being idle. `diamonds.py` finds them, `diamond_app.py`
+is the app.

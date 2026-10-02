@@ -87,6 +87,13 @@ def mouse_to(x, y):
     _send(inp)
 
 
+def cursor_pos():
+    """Where the mouse cursor is now (screen pixels)."""
+    pt = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    return pt.x, pt.y
+
+
 def mouse_button(down):
     inp = INPUT(type=INPUT_MOUSE)
     inp.u.mi = MOUSEINPUT(0, 0, 0, MOUSEEVENTF_LEFTDOWN if down else MOUSEEVENTF_LEFTUP, 0, 0)
