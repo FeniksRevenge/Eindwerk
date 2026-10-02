@@ -108,10 +108,23 @@ def _job(args):
     return play(*args)
 
 
-def score(values, seeds, pool, cal=None):
-    """Hits per minute over every scenario x seed (every kind of game counts the same)."""
+class Stopped(Exception):
+    pass
+
+
+def score(values, seeds, pool, cal=None, should_stop=None):
+    """Hits per minute over every scenario x seed (every kind of game counts the same). Raises Stopped
+    as soon as should_stop() says so (instead of waiting for all the games)."""
     jobs = [(values, s, sc, cal) for sc in SCENARIOS for s in seeds]
-    res = pool.map(_job, jobs) if pool else [_job(j) for j in jobs]
+    if pool is None:
+        res = [_job(j) for j in jobs]
+    else:
+        pending = pool.map_async(_job, jobs)
+        while not pending.ready():
+            pending.wait(0.2)
+            if should_stop is not None and should_stop():
+                raise Stopped
+        res = pending.get()
     k = len(seeds)
     rates = [60.0 * sum(h for h, _ in res[i:i + k]) / sum(t for _, t in res[i:i + k]) for i in range(0, len(res), k)]
     return sum(rates) / len(rates)
@@ -143,6 +156,20 @@ def apply_settings(values):
 
 
 # ---------------------------------------------------------------------------- practicing in the background
+def quiet_output():
+    """In the exe there's no console: sys.stdout/stderr are None, and anything printing an error there
+    (e.g. a practice process stopped mid-game) crashed with an error window. Send it nowhere instead."""
+    import sys
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w"))
+
+
+def _worker_init():
+    quiet_output()
+    _lowest_priority()
+
+
 def _lowest_priority():
     """This process only gets the CPU nobody else wants (Windows: idle priority; elsewhere: nice 19)."""
     try:
@@ -159,11 +186,12 @@ def _lowest_priority():
 def practice_main(start_values, learned_path, out_path, msgs, stop, workers=None):
     """Runs until `stop` is set: tunes the settings in fast fake games, writes better ones to out_path and
     reports progress through `msgs` (a multiprocessing queue of text lines)."""
+    quiet_output()
     _lowest_priority()
     import cma
     from multiprocessing import Pool
     workers = workers or max(1, (os.cpu_count() or 2) - 1)
-    pool = Pool(workers, initializer=_lowest_priority)
+    pool = Pool(workers, initializer=_worker_init)
     say = lambda text: msgs.put(text)  # noqa: E731
 
     def learned_cal():
@@ -179,6 +207,7 @@ def practice_main(start_values, learned_path, out_path, msgs, stop, workers=None
     t0 = time.time()
     from multiprocessing import parent_process
     parent = parent_process()
+    halt = lambda: stop.is_set() or (parent is not None and not parent.is_alive())  # noqa: E731
     try:
         while not stop.is_set() and (parent is None or parent.is_alive()):  # (never outlives the app)
             if es is None:  # (re)start the search around the current settings
@@ -190,20 +219,20 @@ def practice_main(start_values, learned_path, out_path, msgs, stop, workers=None
             xs = es.ask()
             fs = []
             for x in xs:
-                if stop.is_set() or (parent is not None and not parent.is_alive()):
+                if halt():
                     return
-                fs.append(score(to_values(x, base), seeds, pool, cal))
+                fs.append(score(to_values(x, base), seeds, pool, cal, halt))
             es.tell(xs, fs)
             games += len(xs) * len(seeds) * len(SCENARIOS)
             gen += 1
             if gen % 5 == 0:
                 guess = to_values(es.mean, base)
-                f_cur = score(cur, CHECK_SEEDS, pool, cal)
-                f_new = score(guess, CHECK_SEEDS, pool, cal)
+                f_cur = score(cur, CHECK_SEEDS, pool, cal, halt)
+                f_new = score(guess, CHECK_SEEDS, pool, cal, halt)
                 note = f"{games} practice games, {(time.time() - t0) / 60:.0f} min"
                 if f_new < BETTER * f_cur:
-                    c_cur = score(cur, CONFIRM_SEEDS, pool, cal)
-                    c_new = score(guess, CONFIRM_SEEDS, pool, cal)
+                    c_cur = score(cur, CONFIRM_SEEDS, pool, cal, halt)
+                    c_new = score(guess, CONFIRM_SEEDS, pool, cal, halt)
                     if c_new < BETTER * c_cur:
                         found += 1
                         cur = guess
@@ -218,8 +247,11 @@ def practice_main(start_values, learned_path, out_path, msgs, stop, workers=None
                             f"{(f_new + c_new) / 2:.2f} hits/min in fake games); used from the next game. ({note})")
                         continue
                 say(f"Practice: {note}, {found} improvements; current {f_cur:.2f} hits/min in fake games.")
+    except Stopped:
+        pass
     finally:
-        pool.terminate()
+        pool.terminate()  # (its own worker processes: stopped here, not left behind)
+        pool.join()
 
 
 class Practice:
@@ -242,9 +274,11 @@ class Practice:
         self.proc.start()
 
     def stop(self):
+        """Asks it to stop; it ends its own games within a moment (killing it from outside would leave
+        its worker processes behind)."""
         if self.proc is not None:
             self.stop_ev.set()
-            self.proc.join(3)
+            self.proc.join(10)
             if self.proc.is_alive():
                 self.proc.terminate()
             self.proc = None

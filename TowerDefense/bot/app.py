@@ -17,6 +17,9 @@ from tkinter import ttk
 import winio  # noqa: F401  (first: real screen pixels with Windows display scaling)
 
 FROZEN = getattr(sys, "frozen", False)
+for _name in ("stdout", "stderr"):  # the exe has no console: errors printed there would pop up a crash window
+    if getattr(sys, _name) is None:
+        setattr(sys, _name, open(os.devnull, "w"))
 HOME = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG = os.path.join(HOME, "config.json")
 PICTURES = os.path.join(HOME, "pictures")
