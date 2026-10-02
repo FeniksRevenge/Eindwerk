@@ -34,7 +34,9 @@ def make_dpi_aware():
 make_dpi_aware()
 
 # Physical key positions (QWERTY W A S D = AZERTY Z Q S D) and Space.
-SCANCODES = {"up": 0x11, "left": 0x1E, "down": 0x1F, "right": 0x20, "space": 0x39, "e": 0x12}
+SCANCODES = {"up": 0x11, "left": 0x1E, "down": 0x1F, "right": 0x20, "space": 0x39, "e": 0x12,
+             # the number row by position (on AZERTY too): "1" = the key left of "2", ...
+             **{str(i): 0x01 + i for i in range(1, 10)}, "0": 0x0B}
 
 if IS_WINDOWS:
     from ctypes import wintypes

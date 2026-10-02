@@ -86,15 +86,21 @@ Automating Roblox is against Roblox's Terms of Use; using this can get the accou
 
 https://github.com/FeniksRevenge/Eindwerk/releases/latest/download/DiamondBot.exe
 
-Holds the left mouse button in Roblox. When a light-blue diamond shows up in the hay (also a small or
-half-hidden one), it moves the cursor to it, lets go of the left button, holds it again and moves the
-cursor back to where it was. A diamond that doesn't go away after 3 tries is left alone for 10 s.
+For the hay bales. Over and over:
+1. presses **2** (dynamite), holds the left mouse button 1.5 s, lets go;
+2. presses **5** (your tool), holds the left mouse button 15 s. When a light-blue diamond shows up in the
+   hay (also a small or half-hidden one) it moves the cursor to it, lets go of the left button, holds it
+   again and goes back. A diamond that doesn't go away after 3 tries is left alone for 10 s.
 
-1. Open Roblox at the hay bales, put the mouse where it should hold.
+The whole time the cursor slowly circles (60 px, one round per 6 s) around where you put it, so what
+you're holding can't hide a diamond for long. Keys (by position, so AZERTY works), times and the circle
+are settings in the window.
+
+1. Open Roblox at the hay bales, put the mouse where it should circle.
 2. Press **`*`** (or Start); **`-`** stops (and lets go of the button). **`/`** saves a screenshot of what
    it sees with the diamonds it found circled (`pictures/diamond_..._found.png`): send it if it misses
-   diamonds or clicks on something else.
+   diamonds or clicks on something else (for example a light-blue item you're holding).
 
-It only works while Roblox is the window in front (setting), keeps Windows awake and wiggles the mouse by
-1 pixel every minute so Roblox doesn't kick you for being idle. `diamonds.py` finds them, `diamond_app.py`
-is the app.
+It only works while Roblox is the window in front (setting) and keeps Windows awake; the circling and the
+key presses keep Roblox from kicking you for being idle. `diamonds.py` finds them, `diamond_app.py` is the
+app.
