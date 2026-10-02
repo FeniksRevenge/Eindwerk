@@ -38,6 +38,12 @@ Turn on **Auto restart**, start a run and press `*`. It keeps playing game after
   or enemies, staying further from walls, running more or fewer laps, avoiding crowds more) for 4 runs and
   keeps it only if those runs lasted clearly longer. Runs differ a lot, so this is slow: think ~10 tries a
   night, and a lucky streak can fool it now and then.
+- **Practice in fake games** (setting, on by default): while it plays, it also plays fast fake games in the
+  background (with the enemy and bullet speeds it measured in the real game; enemies get more HP after
+  every boss wave) and keeps tuning its settings. New settings are only taken when they beat the current
+  ones on the same test games, and it switches at the next new game (`practiced.json` next to the app;
+  delete it to go back). It runs at the lowest priority on all CPU cores but one, so the game and the bot
+  go first, but it does keep the CPU busy (fans).
 - The window shows the runs so far (average of the last 10, best) and what it's trying.
 
 While it runs, it keeps telling Windows the screen is in use (no sleep, no screen off), and when it has
@@ -66,6 +72,7 @@ turns HDR off (the screen flickers once) and turns it back on when you stop the 
 - `learn.py`: what it learns between runs (see above).
 - `runner.py`: the loop; measures your speed and the game's input delay while playing and plans from where
   you'll really be when its keys land. GAME OVER screen and auto restart.
+- `practice.py` + `fakegame.py`: the fast fake games and the background tuning.
 - `tests/tune.py`: tunes all the planner's settings by playing thousands of fast fake games (late waves
   and the boss) and writes the best to `tuned.py` (`python tests/tune.py tune`, then `compare`).
 - `tests/calibrate.py`: makes the fake game use the speeds measured in the real game

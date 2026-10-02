@@ -21,6 +21,7 @@ HOME = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG = os.path.join(HOME, "config.json")
 PICTURES = os.path.join(HOME, "pictures")
 LEARNED = os.path.join(HOME, "learned.json")
+PRACTICED = os.path.join(HOME, "practiced.json")  # settings found by practicing in fake games
 
 BG, PANEL, LINE, FG, MUTED = "#07090d", "#11151c", "#232a35", "#e4e7ec", "#8a93a1"
 GREEN, RED, AMBER = "#6fdc8c", "#e84a4a", "#ffa040"
@@ -34,6 +35,7 @@ def load_settings():
     except (OSError, ValueError):
         s = {}
     return {"auto_restart": bool(s.get("auto_restart", True)), "require_focus": bool(s.get("require_focus", True)),
+            "practice": bool(s.get("practice", True)),
             "games": parse_games(s.get("games"))}
 
 
@@ -67,6 +69,7 @@ class Bot:
         from learn import Learner
         self.learner = Learner(LEARNED)
         self._reset = threading.Event()
+        self.practice = None
         threading.Thread(target=self._loop, daemon=True).start()
 
     def reset_learning(self):
@@ -129,7 +132,7 @@ class Bot:
                 if not self.running:
                     io = WindowsIO(self.settings["require_focus"])
                     self.runner = BotRunner(io, self.settings["auto_restart"], log=lambda t: self.on_event("log", t),
-                                            learner=self.learner)
+                                            learner=self.learner, settings_path=PRACTICED)
                     self.running = True
                     last_status = None
                     self.on_event("log", "Started." + ("" if getattr(io, "awake_ok", True) else
@@ -144,6 +147,7 @@ class Bot:
                     self.on_event("learned", self.learner.summary())
                     self.on_event("status", "Stopped")
                     self.on_event("log", "Stopped.")
+            self._practice_tick()
             if not self.running:
                 time.sleep(0.03)
                 continue
@@ -199,10 +203,32 @@ class Bot:
                                      f"{1000 * (r.latency + r.input_delay):.0f} ms" +
                               (f", speed {r.player_speed:.0f}" if r.player_speed else ""))
                 frames, fps_t = 0, time.perf_counter()
+        if self.practice is not None:
+            self.practice.stop()
         if io is not None:
             if self.running:
                 self.runner._end_run("stopped")
             io.close()
+
+    def _practice_tick(self):
+        """Practice in fake games (background processes, lowest priority) while the bot plays."""
+        want = self.running and self.settings.get("practice", True)
+        if want and self.practice is None:
+            try:
+                from practice import Practice
+                self.practice = Practice(LEARNED, PRACTICED)
+                self.practice.start()
+                self.on_event("log", "Practicing in fake games in the background (spare CPU only).")
+            except Exception as e:
+                self.settings["practice"] = False
+                self.on_event("log", f"Can't practice in the background: {e!r}")
+                self.practice = None
+        elif not want and self.practice is not None:
+            self.practice.stop()
+            self.practice = None
+        if self.practice is not None:
+            for line in self.practice.poll():
+                self.on_event("practice", line)
 
     # ------------------------------------------------------------------ pictures
     def _save_picture(self):
@@ -323,7 +349,10 @@ class App:
         tk.Label(row_g, text="(blank = keep going; counts from Start)", bg=BG, fg=MUTED, font=FONT).pack(side="left")
         self.games.trace_add("write", lambda *_: self.save())
         ttk.Checkbutton(wrap, text="Only press keys while Roblox is the window in front", variable=self.focus,
-                        command=self.save).pack(anchor="w", pady=(2, 8))
+                        command=self.save).pack(anchor="w", pady=(2, 0))
+        self.prac = tk.BooleanVar(value=s["practice"])
+        ttk.Checkbutton(wrap, text="Practice in fake games while it plays (spare CPU only) to get better faster",
+                        variable=self.prac, command=self.save).pack(anchor="w", pady=(2, 8))
 
         row2 = tk.Frame(wrap, bg=BG)
         row2.pack(fill="x")
@@ -334,6 +363,9 @@ class App:
         self.learned = tk.StringVar(value="Learned: " + self.bot.learner.summary())
         tk.Label(wrap, textvariable=self.learned, bg=BG, fg=MUTED, font=FONT, wraplength=560, justify="left"
                  ).pack(anchor="w", pady=(8, 0))
+        self.practiced = tk.StringVar(value="")
+        tk.Label(wrap, textvariable=self.practiced, bg=BG, fg=MUTED, font=FONT, wraplength=560, justify="left"
+                 ).pack(anchor="w")
 
         self.log = tk.Text(wrap, height=10, width=74, bg=PANEL, fg=FG, font=MONO, relief="flat",
                            highlightbackground=LINE, highlightthickness=1, wrap="word")
@@ -344,6 +376,7 @@ class App:
 
     def save(self):
         self.bot.settings.update(auto_restart=bool(self.auto.get()), require_focus=bool(self.focus.get()),
+                                 practice=bool(self.prac.get()),
                                  games=parse_games(self.games.get()))
         save_settings(self.bot.settings)
 
@@ -382,6 +415,10 @@ class App:
                 self.fps.set(text)
             elif kind == "learned":
                 self.learned.set("Learned: " + text)
+            elif kind == "practice":
+                self.practiced.set(text)
+                if "found better" in text:
+                    self.write(text)
             else:
                 self.write(text)
         self.root.after(50, self.poll)
@@ -414,10 +451,20 @@ def selftest():
         return False
     tracks = Tracker().update(things, 1 / 30, player[:2], 1000, 600)
     keys, aim = Planner().plan(player, 558, tracks, 1984, 1116)
-    return aim is not None
+    if aim is None:
+        return False
+    # practicing: a fast fake game in a separate process (as the exe starts them), and the tuner loads
+    import cma  # noqa: F401
+    from multiprocessing import Pool
+    import practice
+    with Pool(1) as pool:
+        hits, secs = pool.apply(practice.play, (practice.current_values(), 1, ("wave", 3)))
+    return secs > 5
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()  # (the exe starts its practice processes from itself)
     if sys.argv[1:] == ["--selftest"]:
         out = os.path.join(HOME, "selftest.txt")
         try:

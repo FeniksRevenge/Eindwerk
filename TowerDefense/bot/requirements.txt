@@ -3,3 +3,4 @@ numpy>=1.24
 mss>=9.0
 pynput>=1.7
 dxcam>=0.0.5; sys_platform == "win32"
+cma>=3.3            # practice: tunes the settings in fake games

@@ -26,11 +26,13 @@ LOST_NO_WINDOW = 60.0
 
 
 class BotRunner:
-    def __init__(self, io, auto_restart=False, log=lambda text: None, learner=None):
+    def __init__(self, io, auto_restart=False, log=lambda text: None, learner=None, settings_path=None):
         self.io = io
         self.auto_restart = auto_restart
         self.log = log
         self.learner = learner
+        self.settings_path = settings_path  # settings found by practicing (taken at the start of each game)
+        self.settings_mtime = None
         self.events = []      # ("hit", cause) for the app (it saves a clip of every hit)
         self.detector = Detector()
         self.planner = Planner()
@@ -76,6 +78,21 @@ class BotRunner:
                 self.input_delay = min(0.4, max(0.0, self.learner.me["delay"]))
                 self._me_loaded = True
         self.aim_pt = None
+        self._load_practiced()
+
+    def _load_practiced(self):
+        import os
+        path = getattr(self, "settings_path", None)
+        if not path or not os.path.exists(path):
+            return
+        m = os.path.getmtime(path)
+        if m != self.settings_mtime:
+            from practice import apply_settings, load_settings
+            values = load_settings(path)
+            apply_settings(values)
+            if self.settings_mtime is not None and values:
+                self.log("Using the better settings found by practicing.")
+            self.settings_mtime = m
 
     def run_seconds(self):
         return 0.0 if self.first_seen is None else self.last_seen - self.first_seen

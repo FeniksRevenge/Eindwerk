@@ -58,6 +58,8 @@ HIT_MOB = 5e5
 class Planner:
     BULLET_MARGIN = 0.8   # x R of room to keep from bullets
     NEAR_BULLET = 400.0
+    NEAR_ADD = 1.0        # 1: every nearby bullet/enemy adds to the cost; 0: only the closest one at each moment
+                          # counts (a middle full of slow bullets then doesn't look worse than a wall)
     NEAR_MOB = 600.0
     CROWD_WEIGHT = 40.0
     WALL = 6.0            # x R from an edge where it starts to cost
@@ -139,7 +141,8 @@ class Planner:
                 wt = w[1:][None, :, None]
                 cost += (np.where(gap < 0, HIT_BULLET, 0.0) * wt).sum(axis=(1, 2))
                 near = np.clip((m - gap) / m, 0, 1) ** 2 * self.NEAR_BULLET
-                cost += (near * wt).sum(axis=(1, 2))
+                near = self.NEAR_ADD * near.sum(axis=2) + (1 - self.NEAR_ADD) * near.max(axis=2)
+                cost += (near * wt[..., 0]).sum(axis=1)
 
         # --- mobs: chasers walk toward where you'll be; others keep moving as they do
         if mobs:
@@ -165,7 +168,8 @@ class Planner:
             gap = np.sqrt((rel ** 2).sum(-1)) - size(rel) - mr[None, None]
             cost += (np.where(gap < 0, HIT_MOB, 0.0) * w[None, :, None]).sum(axis=(1, 2))
             near = np.clip((margin[None, None] - gap) / margin[None, None], 0, 1) ** 2 * self.NEAR_MOB
-            cost += (near * w[None, :, None]).sum(axis=(1, 2))
+            near = self.NEAR_ADD * near.sum(axis=2) + (1 - self.NEAR_ADD) * near.max(axis=2)
+            cost += (near * w[None, :]).sum(axis=1)
             # where each plan ends: away from crowds
             end = P[:, -1, :]
             g_end = np.sqrt(((end[:, None, :] - mp[None]) ** 2).sum(-1)) - mr[None]

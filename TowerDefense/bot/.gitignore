@@ -7,3 +7,5 @@ learned.json
 learned.json.tmp
 tests/.tune_state.pkl
 tests/.tune.log
+practiced.json
+practiced.json.tmp

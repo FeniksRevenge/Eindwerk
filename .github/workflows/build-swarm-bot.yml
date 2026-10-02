@@ -32,6 +32,9 @@ jobs:
           --paths TowerDefense/bot
           --hidden-import pynput.keyboard._win32
           --hidden-import pynput.mouse._win32
+          --hidden-import practice
+          --hidden-import fakegame
+          --hidden-import cma
           TowerDefense/bot/app.py
 
       - name: Self-test the exe
