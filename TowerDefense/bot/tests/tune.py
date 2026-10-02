@@ -31,7 +31,7 @@ import planner  # noqa: E402
 from tracker import Tracker  # noqa: E402
 from vision import Thing  # noqa: E402
 
-SCENARIOS = (("wave", 12), ("wave", 20), ("boss", 1))
+SCENARIOS = (("wave", 12), ("wave", 30), ("boss", 1))  # (wave 30: crowded with shooters and tanks)
 SECONDS = 40.0
 FPS = 12.0          # how often the real bot decides
 DELAY = 0.12        # input delay (s)
@@ -128,7 +128,7 @@ STATE = os.path.join(HERE, ".tune_state.pkl")  # so a restart carries on where i
 def tune(generations=30):
     import pickle
     import cma
-    base = _base_values()
+    base = {n: planner.get_setting(n) for n in planner.TUNABLE}  # search around the current values (tuned.py)
     pool = Pool(os.cpu_count())
     check = [5000 + i for i in range(6)]
     if os.path.exists(STATE):
@@ -140,7 +140,7 @@ def tune(generations=30):
                                       {"bounds": [-1, 1], "popsize": 12, "seed": 1, "verbose": -9})
         gen0, best, best_x = 0, None, None
         f_base = score(base, check, pool)
-        print(f"hand-picked values on the 18 check games: {f_base:.2f} hits/min", flush=True)
+        print(f"current values on the check games: {f_base:.2f} hits/min", flush=True)
     for gen in range(gen0, generations):
         seeds = [1000 + gen * 10 + i for i in range(3)]  # new games every generation: no learning them by heart
         xs = es.ask()
@@ -150,16 +150,16 @@ def tune(generations=30):
         if gen % 5 == 4 or gen == generations - 1:
             # the middle of the search is the best guess; check it on the same games as the hand-picked values
             f_mean = score(to_values(es.mean, base), check, pool)
-            print(f"   current guess on the 18 check games: {f_mean:.2f} hits/min (hand-picked {f_base:.2f})",
+            print(f"   current guess on the 18 check games: {f_mean:.2f} hits/min (current {f_base:.2f})",
                   flush=True)
             if f_mean < f_base and (best is None or f_mean < best):
                 best, best_x = f_mean, list(es.mean)
                 write_tuned(to_values(best_x, base), f"generation {gen + 1}, {best:.2f} hits/min on its check "
-                                                     f"games vs {f_base:.2f} hand-picked")
+                                                     f"games vs {f_base:.2f} before")
         with open(STATE, "wb") as f:
             pickle.dump((es, gen + 1, best, best_x, f_base), f)
     if best_x is None:
-        print("nothing beat the hand-picked values", flush=True)
+        print("nothing beat the current values", flush=True)
     else:
         vals = to_values(best_x, base)
         for n in planner.TUNABLE:

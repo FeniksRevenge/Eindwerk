@@ -43,9 +43,8 @@ Turn on **Auto restart**, start a run and press `*`. It keeps playing game after
 While it runs, it keeps telling Windows the screen is in use (no sleep, no screen off), and when it has
 sent Roblox nothing for a minute (lobby, GAME OVER screen) it wiggles the mouse by 1 pixel over the Roblox
 window, so neither Windows nor Roblox thinks you're away. For a whole night also set Windows itself:
-Settings > System > Power > Screen and sleep: **Never** (plugged in), and no screen saver. Every hit is saved as a short clip in
-`pictures/hits/` (the newest 40): zip that folder and `learned.json` and send them, that's how the bot
-gets better the most.
+Settings > System > Power > Screen and sleep: **Never** (plugged in), and no screen saver. Nothing is recorded by itself: press `+` right
+after it does something dumb to save the last 8 s.
 
 **If you get disconnected or kicked:** it doesn't try to get back to the arcade. When it hasn't seen you or
 a GAME OVER screen for 90 s, or the picture hasn't changed for 45 s, or the Roblox window is gone, it lets

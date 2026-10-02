@@ -20,9 +20,7 @@ FROZEN = getattr(sys, "frozen", False)
 HOME = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 CONFIG = os.path.join(HOME, "config.json")
 PICTURES = os.path.join(HOME, "pictures")
-HITS = os.path.join(PICTURES, "hits")
 LEARNED = os.path.join(HOME, "learned.json")
-HIT_CLIPS_KEPT = 40
 
 BG, PANEL, LINE, FG, MUTED = "#07090d", "#11151c", "#232a35", "#e4e7ec", "#8a93a1"
 GREEN, RED, AMBER = "#6fdc8c", "#e84a4a", "#ffa040"
@@ -69,7 +67,6 @@ class Bot:
         from learn import Learner
         self.learner = Learner(LEARNED)
         self._reset = threading.Event()
-        self.pending_clips = []   # (when to save, cause): a hit is saved a second later, to show what followed
         threading.Thread(target=self._loop, daemon=True).start()
 
     def reset_learning(self):
@@ -160,14 +157,7 @@ class Bot:
                 self.on_event("status", "Error")
                 self.on_event("log", f"Error, stopped: {e!r}")
                 continue
-            while self.runner.events:
-                kind, cause = self.runner.events.pop(0)
-                if kind == "hit":
-                    self.pending_clips.append((time.perf_counter() + 1.5, cause))
-            if self.pending_clips and time.perf_counter() >= self.pending_clips[0][0]:
-                _, cause = self.pending_clips.pop(0)
-                self._save_recording(folder=os.path.join(HITS, f"hit_{time.strftime('%Y%m%d_%H%M%S')}_{cause}"),
-                                     quiet=True)
+            self.runner.events.clear()  # (nothing is saved by itself: only with the + key)
             if status in ("dead", "lost", "playing", "restarting") and self.runner.run_over and \
                     getattr(self, "_shown_runs", None) != len(self.learner.runs):
                 self._shown_runs = len(self.learner.runs)
@@ -238,26 +228,20 @@ class Bot:
         cv2.imwrite(base + "_bot.png", pic)
         self.on_event("log", f"Screenshot saved: {os.path.basename(base)}.png (+ _bot.png)")
 
-    def _save_recording(self, folder=None, quiet=False):
+    def _save_recording(self):
         """Saves the last 8 s (on its own thread, so the bot doesn't stall)."""
         r = self.runner
         if r is None or not r.recording:
-            if not quiet:
-                self.on_event("log", "Nothing recorded yet (it records while running).")
+            self.on_event("log", "Nothing recorded yet (it records while running).")
             return
         items = list(r.recording)
-        folder = folder or os.path.join(PICTURES, "rec_" + time.strftime("%Y%m%d_%H%M%S"))
-        threading.Thread(target=self._write_recording, args=(items, folder, quiet), daemon=True).start()
+        folder = os.path.join(PICTURES, "rec_" + time.strftime("%Y%m%d_%H%M%S"))
+        threading.Thread(target=self._write_recording, args=(items, folder), daemon=True).start()
 
-    def _write_recording(self, items, folder, quiet):
+    def _write_recording(self, items, folder):
         import cv2
         import numpy as np
-        import shutil
         os.makedirs(folder, exist_ok=True)
-        if quiet:  # hit clips: keep only the newest ones
-            old = sorted(d for d in os.listdir(HITS) if d.startswith("hit_"))
-            for d in old[:-HIT_CLIPS_KEPT]:
-                shutil.rmtree(os.path.join(HITS, d), ignore_errors=True)
         log = []
         for i, (t, jpg, info) in enumerate(items):
             img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
@@ -277,8 +261,6 @@ class Bot:
             log.append(info)
         with open(os.path.join(folder, "log.json"), "w") as f:
             json.dump(log, f)
-        if quiet:
-            return
         self.on_event("log", f"Saved the last {items[-1][0] - items[0][0]:.0f} s: pictures/{os.path.basename(folder)} "
                              "(zip that folder and send it).")
 

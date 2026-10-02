@@ -108,6 +108,8 @@ class Game:
             return
         n = 3 + self.wave
         kinds = ["grunt"] * 4 + ["shooter"] * 2 + ["yellow"] + ["tank"]
+        if self.wave >= 15:  # late waves (as recorded at wave 31): many shooters and tanks
+            kinds = ["grunt"] * 3 + ["shooter"] * 5 + ["yellow"] + ["tank"] * 3
         self.pending = [self.rnd.choice(kinds) for _ in range(n)]
         self.next_spawn = self.t + 2.0
 

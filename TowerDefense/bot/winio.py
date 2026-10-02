@@ -250,8 +250,8 @@ def apply_color_lut(frame, lut):
     return cv2.LUT(frame, lut.reshape(256, 1, 3))
 
 class Capture:
-    """Screenshots of the Roblox window's inside on a background thread. A new one is taken as soon as
-    the bot took the previous one, so the bot always gets a fresh picture without waiting long.
+    """Screenshots of the Roblox window's inside on a background thread. A new one is taken the moment the
+    bot asks for it (not earlier: it would be out of date by the time the bot gets to it).
     Uses dxcam (Windows' fast Desktop Duplication, a few ms per picture) when it works, else mss."""
 
     def __init__(self, fast=True):
@@ -262,7 +262,7 @@ class Capture:
         self.note = ""
         self.hdr_note = ""
         self.cond = threading.Condition()
-        self.taken = threading.Event()
+        self.want = threading.Event()
         self.stop = threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -330,6 +330,10 @@ class Capture:
         cam, cam_area, lut = None, None, None
         next_find, area, last_frame, last_new = 0.0, None, None, 0.0
         while not self.stop.is_set():
+            # wait until the bot asks for the next picture, then take it right away: a picture taken while the
+            # bot was still busy with the last one would already be that much out of date
+            self.want.wait(0.25)
+            self.want.clear()
             now = time.perf_counter()
             if now >= next_find:  # the window may have moved or been resized
                 self.hwnd, area = find_roblox()
@@ -353,12 +357,12 @@ class Capture:
                     img = cam.grab(region=box)
                     if img is not None:
                         frame = apply_color_lut(np.ascontiguousarray(img[:, :, :3]), lut)
-                    elif last_frame is not None and t - last_new < 0.15:
-                        time.sleep(0.003)  # nothing changed on screen yet
-                        continue
+                    elif last_frame is not None and t - last_new < 0.5:
+                        frame = last_frame  # nothing changed on screen since: the last picture is current
                 if frame is None:
                     frame = np.ascontiguousarray(np.asarray(sct.grab(area))[:, :, :3])
-                last_frame, last_new = frame, t
+                if frame is not last_frame:
+                    last_frame, last_new = frame, t
             except Exception:
                 if cam is not None:  # dxcam stopped working (window moved off screen...): mss from now on
                     cam, self.method = None, "mss"
@@ -369,21 +373,20 @@ class Capture:
                 self.frame, self.frame_time, self.area = frame, t, dict(area)
                 self.seq += 1
                 self.cond.notify_all()
-            self.taken.wait(0.03)
-            self.taken.clear()
 
     def latest(self, after_seq):
-        """(frame, time taken, window area, seq): waits up to 0.1 s for a frame newer than after_seq.
+        """(frame, time taken, window area, seq): asks for a new picture and waits up to 0.1 s for it.
         frame is None when the Roblox window isn't found."""
         with self.cond:
-            self.cond.wait_for(lambda: self.seq > after_seq, timeout=0.1)
+            asked = self.seq  # a picture taken after this moment, not one taken earlier
+            self.want.set()
+            self.cond.wait_for(lambda: self.seq > asked, timeout=0.1)
             out = self.frame, self.frame_time, self.area, self.seq
-        self.taken.set()
         return out
 
     def close(self):
         self.stop.set()
-        self.taken.set()
+        self.want.set()
         hdr_restore()
 
 

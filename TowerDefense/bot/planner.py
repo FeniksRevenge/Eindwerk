@@ -73,6 +73,8 @@ class Planner:
     LAP_WEIGHT = 150.0    # how much it likes running laps around the middle (x2 with the boss there)
     CENTER_WEIGHT = 60.0
     HEALTH_BONUS = 3000.0
+    HEALTH_PULL = 500.0   # a health circle further away: how much it likes heading there (when it's safe)
+    OPEN_WEIGHT = 1200.0  # dislike for ending up where few escape routes are left (corners, closing rings)
     TURN_COST = 20.0
     SHOT_SPEED = 2.4      # your bullets' speed as a multiple of your walking speed (for aiming ahead)
 
@@ -197,11 +199,23 @@ class Planner:
                       (P[..., 1] > y0 * H - R) & (P[..., 1] < y1 * H + R))
             cost += inside[:, 1:].mean(axis=1) * wgt
 
-        # --- green health circles on the way
+        # --- green health circles: picked up on the way (the sooner the better: otherwise "wait, then go"
+        # looks as good as "go now" and it keeps waiting), and a pull toward one further away
         if health:
             hp = np.array([[t.x, t.y, t.r] for t in health])
             dd = np.sqrt(((P[:, :, None, :] - hp[None, None, :, :2]) ** 2).sum(-1)) - R - hp[None, None, :, 2]
-            cost -= (dd.min(axis=1) < 0).any(axis=1) * self.HEALTH_BONUS
+            got = (dd < 0).any(axis=2)                                                    # (81, 16)
+            first = np.where(got.any(axis=1), got.argmax(axis=1), len(T))
+            cost -= np.where(first < len(T), 1.0 - 0.8 * T[np.minimum(first, len(T) - 1)] / T[-1], 0.0) * \
+                self.HEALTH_BONUS
+            d0 = np.hypot(hp[:, 0] - p0[0], hp[:, 1] - p0[1])
+            j = int(np.argmin(d0))
+            d_end = np.hypot(P[:, -1, 0] - hp[j, 0], P[:, -1, 1] - hp[j, 1])
+            cost += (d_end - d0[j]) / (V * T[-1]) * self.HEALTH_PULL
+
+        # --- escape routes: from where each plan ends, how far can you still run in each of 8 directions
+        # before a wall or an enemy is in the way? Corners and closing rings of enemies leave few.
+        cost += self._closed_in(P[:, -1, :], R, V, mobs, W, H, T[-1] + latency) * self.OPEN_WEIGHT
 
         # --- laps around the middle: running a big circle keeps chasers behind you and keeps you out
         # of corners (where the boss and its grunts would trap you)
@@ -216,6 +230,8 @@ class Planner:
             pref0 = self._lap_dir(p0, W, H)
             pref1 = np.array([self._lap_dir(e, W, H) for e in end1])                    # (9, 2)
         lap *= self.style.get("laps", 1.0)
+        if health and min(math.hypot(t.x - p0[0], t.y - p0[1]) for t in health) < 1.5 * V * T[-1]:
+            lap *= 0.2  # a health circle within reach matters more than the usual laps
         first = np.repeat(np.arange(9), 9)
         second = np.tile(np.arange(9), 9)
         cost += (1 - DIRS[first] @ pref0) * lap
@@ -226,6 +242,28 @@ class Planner:
         best = int(np.argmin(cost))
         self.prev = int(first[best])
         return KEYS[self.prev], aim_pt
+
+    def _closed_in(self, ends, R, V, mobs, W, H, t_end):
+        """(1 - share of open running room around each end point)^2: 0 in the open, ~0.4 in a corner."""
+        steps = V * np.array([0.15, 0.3, 0.45, 0.6, 0.75, 0.9])
+        Q = ends[:, None, None, :] + DIRS[None, 1:, None, :] * steps[None, None, :, None]   # (n, 8, 6, 2)
+        blocked = (Q[..., 0] < R) | (Q[..., 0] > W - R) | (Q[..., 1] < R) | (Q[..., 1] > H - R)
+        if mobs:
+            mp = np.array([[t.x, t.y] for t in mobs])
+            mr = np.array([t.r for t in mobs])
+            # where they'll be by then: chasers walk toward the end point, the others keep going
+            spd = np.array([max(t.speed, self.mob_speed.get(t.kind, 0.6) * V) for t in mobs])
+            chase = np.array([t.kind in CHASERS for t in mobs])
+            to_end = ends[:, None, :] - mp[None]                                             # (n, M, 2)
+            dist = np.sqrt((to_end ** 2).sum(-1)) + 1e-6
+            walk = np.minimum(dist, spd[None] * t_end)
+            mpos = np.where(chase[None, :, None], mp[None] + to_end / dist[..., None] * walk[..., None],
+                            (mp + np.array([[t.vx, t.vy] for t in mobs]) * t_end)[None])     # (n, M, 2)
+            gap = np.sqrt(((Q[:, :, :, None, :] - mpos[:, None, None]) ** 2).sum(-1)) - mr - 1.5 * R
+            blocked |= (gap < 0).any(axis=-1)
+        # a direction is open up to its first blocked point
+        free = np.where(blocked.any(axis=2), blocked.argmax(axis=2), blocked.shape[2]) / blocked.shape[2]
+        return (1.0 - free.mean(axis=1)) ** 2
 
     def _lap_dir(self, p, W, H):
         """Direction of a lap around the middle (an ellipse at 1/3 of the arena), steering back onto it."""
@@ -280,7 +318,8 @@ class Planner:
 # tests/tune.py tunes the settings above by playing thousands of fake games and writes the best ones
 # to tuned.py; they replace the hand-picked values here.
 TUNABLE = (["BULLET_MARGIN", "NEAR_BULLET", "NEAR_MOB", "CROWD_WEIGHT", "WALL", "WALL_WEIGHT", "CORNER_WEIGHT",
-            "LAP_WEIGHT", "CENTER_WEIGHT", "HEALTH_BONUS", "TURN_COST", "BOSS_KEEP"] +
+            "LAP_WEIGHT", "CENTER_WEIGHT", "HEALTH_BONUS", "HEALTH_PULL", "OPEN_WEIGHT", "TURN_COST",
+            "BOSS_KEEP"] +
            [f"MARGIN.{k}" for k in MARGIN] + [f"AIM_PRIORITY.{k}" for k in AIM_PRIORITY])
 
 
