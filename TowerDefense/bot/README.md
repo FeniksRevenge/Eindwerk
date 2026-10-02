@@ -40,7 +40,10 @@ Turn on **Auto restart**, start a run and press `*`. It keeps playing game after
   night, and a lucky streak can fool it now and then.
 - The window shows the runs so far (average of the last 10, best) and what it's trying.
 
-While it runs, Windows won't sleep or turn the screen off. Every hit is saved as a short clip in
+While it runs, it keeps telling Windows the screen is in use (no sleep, no screen off), and when it has
+sent Roblox nothing for a minute (lobby, GAME OVER screen) it wiggles the mouse by 1 pixel over the Roblox
+window, so neither Windows nor Roblox thinks you're away. For a whole night also set Windows itself:
+Settings > System > Power > Screen and sleep: **Never** (plugged in), and no screen saver. Every hit is saved as a short clip in
 `pictures/hits/` (the newest 40): zip that folder and `learned.json` and send them, that's how the bot
 gets better the most.
 

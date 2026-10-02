@@ -125,7 +125,9 @@ class Bot:
                                             learner=self.learner)
                     self.running = True
                     last_status = None
-                    self.on_event("log", "Started.")
+                    self.on_event("log", "Started." + ("" if getattr(io, "awake_ok", True) else
+                                 " Windows refused to keep the screen on: set Settings > System > Power > "
+                                 "Screen and sleep to Never, or the bot stops when the screen turns off."))
             if self._stop.is_set():
                 self._stop.clear()
                 if self.running:

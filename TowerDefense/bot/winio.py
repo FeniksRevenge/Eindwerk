@@ -388,12 +388,25 @@ class Capture:
 
 
 # --------------------------------------------------------------------------- the bot's hands
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
+AWAKE_EVERY = 30.0    # s: tell Windows again that the screen is in use (also resets its idle timers)
+NUDGE_AFTER = 60.0    # s without any input to Roblox (lobby, GAME OVER screen, waiting): wiggle the mouse
+
+
 def keep_awake(on):
-    """While the bot runs: don't let Windows sleep or turn the screen off (screen capture stops then)."""
+    """While the bot runs: don't let Windows sleep or turn the screen off (screen capture stops then).
+    Returns whether Windows accepted it."""
     try:
-        ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
         flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED if on else 0)
-        ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(flags))
+        return bool(ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(flags)))
+    except Exception:
+        return False
+
+
+def still_here():
+    """Resets Windows' idle timers (screen off / sleep) once, like a key press would."""
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED))
     except Exception:
         pass
 
@@ -402,7 +415,10 @@ class WindowsIO:
     """What the bot runner talks to: screenshots in, keys and mouse out (in window coordinates)."""
 
     def __init__(self, require_focus=True, fast_capture=True):
-        keep_awake(True)
+        self.awake_ok = keep_awake(True)
+        self.next_awake = time.monotonic() + AWAKE_EVERY
+        self.last_input = time.monotonic()
+        self.nudges = 0
         self.require_focus = require_focus
         self.capture = Capture(fast_capture)
         self.seq = 0
@@ -413,7 +429,24 @@ class WindowsIO:
 
     def grab(self):
         frame, self.frame_time, self.area, self.seq = self.capture.latest(self.seq)
+        self._keep_alive()
         return frame
+
+    def _keep_alive(self):
+        """Keeps the screen on and Roblox from thinking you're away while the bot waits (lobby, GAME OVER
+        screen): a 1-pixel mouse wiggle over the Roblox window when it sent nothing for a minute."""
+        now = time.monotonic()
+        if now >= self.next_awake:
+            self.next_awake = now + AWAKE_EVERY
+            keep_awake(True)
+            still_here()
+        if now - self.last_input > NUDGE_AFTER and self.area and foreground_is(self.capture.hwnd):
+            cx, cy = self.area["left"] + self.area["width"] // 2, self.area["top"] + self.area["height"] // 2
+            mouse_to(cx + 1, cy)
+            time.sleep(0.05)
+            mouse_to(cx, cy)
+            self.last_input = now
+            self.nudges += 1
 
     def now(self):
         return time.perf_counter()
@@ -423,6 +456,8 @@ class WindowsIO:
 
     def set_keys(self, keys):
         keys = set(keys)
+        if keys != self.held:
+            self.last_input = time.monotonic()
         for k in self.held - keys:
             press(k, False)
         for k in keys - self.held:
@@ -431,16 +466,19 @@ class WindowsIO:
 
     def fire(self, on):
         if on != self.firing:
+            self.last_input = time.monotonic()
             press("space", on)
             self.firing = on
 
     def aim(self, x, y):
         if self.area:
+            self.last_input = time.monotonic()
             mouse_to(self.area["left"] + x, self.area["top"] + y)
 
     def click(self, x, y):
         if not self.area:
             return
+        self.last_input = time.monotonic()
         mouse_to(self.area["left"] + x, self.area["top"] + y)
         time.sleep(0.08)
         mouse_button(True)
@@ -449,6 +487,7 @@ class WindowsIO:
 
     def tap(self, name):
         """Press and let go of a key (E: start the arcade game when standing at it)."""
+        self.last_input = time.monotonic()
         press(name, True)
         time.sleep(0.08)
         press(name, False)
