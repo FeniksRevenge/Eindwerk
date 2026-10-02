@@ -28,7 +28,7 @@ It only presses keys while the Roblox window is in front (setting), and it takes
 ## Overnight: it gets better run after run
 Turn on **Auto restart**, start a run and press `*`. It keeps playing game after game, and it learns
 (remembered in `learned.json` next to the app; **Reset learning** forgets it):
-- **What hit you:** it reads your HP bar; when it drops it looks at what was closest and keeps a bit more
+- **What hit you:** when the screen flashes red (you got hit) it looks at what was closest and keeps a bit more
   room from that kind of enemy (going back to normal when that kind stops hitting you).
 - **Measuring instead of guessing:** enemy speeds, the speed of each bullet color, your own speed and the
   game's input delay are measured every run and remembered, so new enemies and bullets are predicted

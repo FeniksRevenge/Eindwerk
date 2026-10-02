@@ -306,6 +306,8 @@ class Game:
         xe = int(x0 + (x1 - x0) * max(0, self.hp) / 10)
         part = img[40 + rows[0]:40 + rows[-1] + 1, xe:x1]
         part[fill[rows[0]:rows[-1] + 1, xe - 40:x1 - 40]] = (14, 12, 12)
+        if self.t - self.last_hit < 0.15:  # the red flash when you get hit
+            img = cv2.addWeighted(img, 0.4, np.full_like(img, (22, 20, 110)), 0.6, 0)
         return img
 
 

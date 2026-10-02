@@ -15,7 +15,7 @@ import numpy as np
 
 from planner import BODY_BACK, MOB_SPEED, Planner, body_reach
 from tracker import Tracker
-from vision import REF_H, Detector, annotate, find_leave, game_over_info, is_game_over, HPBar
+from vision import REF_H, Detector, annotate, find_leave, game_over_info, hit_flash, hud_visible, is_game_over
 
 HOLD_MAX = 15.0       # seconds it may keep you at a spot by your picture alone
 RECORD_SECONDS = 8.0  # how much the "record" key saves
@@ -64,10 +64,8 @@ class BotRunner:
         self.restart = None   # auto restart in progress: {"since", "clicks", "last_click"}
         self.started = self.first_seen = self.last_seen = None
         self.last = None      # everything from the latest step (screenshots, recordings)
-        self.hp = None        # last trusted HP reading (0..1)
-        self.hp_reads = []
-        self.hp_change = None   # when the HP bar first looked different (the hit's time)
-        self.hp_bar = HPBar()
+        self.in_flash = False  # the screen is flashing red (you just got hit)
+        self.last_hit = -9.0
         self.history = collections.deque()   # (t, (x, y, R), things) of the last second, to see what hit you
         self.still = (None, 0.0, 0.0)          # (small picture, when, how long it hasn't changed)
         self.run_over = False
@@ -143,12 +141,13 @@ class BotRunner:
         if not self.seen and self.after_restart is not None and now - self.after_restart > LOST_WAITING:
             return self._lost(f"no new game {LOST_WAITING:.0f} s after leaving and pressing E")
         if self.lobby is not None:
-            if self.lobby["e"] and self.hp_bar.read(frame[::2, ::2]) is not None:
+            if self.lobby["e"] and hud_visible(frame):
                 self.lobby = None  # the game's HUD is back: play (after its countdown)
                 self.log("New game started.")
             else:
                 return self._press_e(now)
 
+        self._check_hit(frame, now)
         t1 = time.perf_counter()
         player, things = self.detector.detect(frame)
         self.ms["detect"] = round(1000 * (time.perf_counter() - t1), 1)
@@ -195,7 +194,7 @@ class BotRunner:
         if self.learner is not None:
             bs.update({c: v * H for c, v in self.learner.bullet_speed.items()})
         tracks = self.tracker.update(things, dt, (x, y), max_move=1.6 * H, new_bullet_speed=bs)
-        self._watch_hp(frame, now, (x, y, R), things)
+        self._remember(now, (x, y, R), things)
         if self.learner is not None:
             self.learner.played(dt, tracks, V, H)
         # where you'll be when new keys take effect: the screenshot shows the keys from input_delay ago,
@@ -225,8 +224,8 @@ class BotRunner:
         return "playing"
 
     # ------------------------------------------------------------------ learning, and noticing trouble
-    def _watch_hp(self, frame, now, me, things):
-        """Reads the HP bar; when it drops, works out what hit you (the closest thing just before)."""
+    def _remember(self, now, me, things):
+        """The last moments (where you were, facing where, what was around), to see what hit you."""
         face = None
         if self.aim_pt is not None:  # the UFO faces the mouse
             fx, fy = self.aim_pt[0] - me[0], self.aim_pt[1] - me[1]
@@ -235,32 +234,22 @@ class BotRunner:
         self.history.append((now, me, [(th.kind, th.x, th.y, th.r) for th in things], face))
         while self.history and now - self.history[0][0] > 1.6:
             self.history.popleft()
-        small = frame[::16, ::16]
-        if np.median(small[..., 2]) > max(30, 2 * np.median(small[..., 0])):
-            self.hp_reads = []  # the screen flashes red right after a hit: the bar can't be read
-            if self.hp_change is None:
-                self.hp_change = now  # (when the hit happened: the bar takes a few pictures to trust)
-            return
-        v = self.hp_bar.read(frame[::2, ::2])
-        if v is None:
-            return
-        if self.hp is not None and v < self.hp - 0.05 and self.hp_change is None:
-            self.hp_change = now
-        self.hp_reads = (self.hp_reads + [v])[-4:]
-        if len(self.hp_reads) < 4 or max(self.hp_reads) - min(self.hp_reads) > 0.03:
-            return
-        v = sum(self.hp_reads) / 4
-        t_hit, self.hp_change = (self.hp_change or now), None
-        if self.hp is not None and v < self.hp - 0.05:
-            cause = self._what_hit(t_hit)
+
+    def _check_hit(self, frame, now):
+        """A hit = the screen starts flashing red (checked on every picture: right after a hit you blink
+        and often can't be seen)."""
+        flash = hit_flash(frame)
+        if flash and not self.in_flash and self.seen and now - self.last_hit > 0.8:
+            self.last_hit = now
+            cause = self._what_hit(now)
             self.events.append(("hit", cause))
             if self.learner is not None:
                 self.learner.hit(cause)
-                fit = self._body_fit(t_hit, cause)
+                fit = self._body_fit(now, cause)
                 if fit is not None:
                     self.learner.body_fit(fit)
-            self.log(f"Hit by {cause} (HP {10 * v:.0f}/10).")
-        self.hp = v
+            self.log(f"Hit by {cause}.")
+        self.in_flash = flash
 
     def _what_hit(self, now):
         best, cause = None, "unknown"
