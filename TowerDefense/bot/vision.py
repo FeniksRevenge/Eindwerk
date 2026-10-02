@@ -395,15 +395,6 @@ def hit_flash(bgr):
     return r >= 18 and r > 2 * b and r - max(b, g) >= 10
 
 
-def hud_visible(bgr):
-    """The game's HP panel (dark red bar at the top left) is on screen: you're in an arcade game."""
-    H, W = bgr.shape[:2]
-    reg = bgr[int(0.015 * H):int(0.15 * H), int(0.005 * W):int(0.30 * W)].astype(np.int16)
-    b, g, r = reg[..., 0], reg[..., 1], reg[..., 2]
-    red = (r > 32) & (r < 110) & (r > b + 15) & (r > g + 15)
-    return int((red.mean(1) >= 0.2).sum()) >= 0.02 * H
-
-
 def game_over_info(bgr):
     """Median BGR of the screen edges and of the middle, and whether that's the GAME OVER screen
     (dark red background with a dark gray panel in the middle)."""
@@ -423,39 +414,50 @@ def is_game_over(bgr):
     return game_over_info(bgr)["game_over"]
 
 
-def find_play_again(bgr, which="left"):
-    """Center (x, y) of a button on the GAME OVER screen, or None: the dark panel in the middle, then
-    the left (PLAY AGAIN) or right (LEAVE) of the two lighter buttons at its bottom (or where it sits
-    on the panel)."""
+BUTTON_BGR = (47, 40, 41)   # the gray PLAY AGAIN / LEAVE buttons on the GAME OVER screen
+
+
+def find_buttons(bgr):
+    """Centers (x, y) of the GAME OVER screen's buttons, left to right ([PLAY AGAIN, LEAVE]): wide flat
+    gray rectangles side by side in the middle of the screen (the panel is drawn over the game, so look
+    for the buttons themselves)."""
     h, w = bgr.shape[:2]
-    s = 4
+    s = 2
     small = cv2.resize(bgr, (w // s, h // s), interpolation=cv2.INTER_AREA).astype(np.int16)
-    mx, mn = small.max(axis=2), small.min(axis=2)
-    neutral = ((mx - mn) <= 14) & (mx >= 12) & (mx <= 95)
-    mask = cv2.morphologyEx(neutral.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    n, _labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if n < 2:
-        return None
-    i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    px, py, pw, ph, area = (int(v) for v in stats[i])
-    if area < 0.08 * mask.size or not (px < small.shape[1] / 2 < px + pw):
-        return None
-    panel = np.median(mx[py:py + ph, px:px + pw][neutral[py:py + ph, px:px + pw]])
-    y0 = py + int(ph * 0.65)
-    reg = mx[y0:py + ph, px:px + pw]
-    lighter = (reg >= panel + 7) & (reg <= panel + 70) & neutral[y0:py + ph, px:px + pw]
-    lighter = cv2.morphologyEx(lighter.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    m, _l, bs, bc = cv2.connectedComponentsWithStats(lighter, connectivity=8)
-    buttons = [(bc[j][0], bc[j][1]) for j in range(1, m)
-               if bs[j, cv2.CC_STAT_WIDTH] > 0.2 * pw and bs[j, cv2.CC_STAT_HEIGHT] > 0.04 * ph]
-    if len(buttons) >= 2 or (buttons and which == "left"):
-        bx, by = min(buttons) if which == "left" else max(buttons)
-        return ((px + bx) * s + s / 2, (y0 + by) * s + s / 2)
-    return ((px + (0.279 if which == "left" else 0.72) * pw) * s, (py + 0.880 * ph) * s)
+    near = (np.abs(small - np.array(BUTTON_BGR, np.int16)) <= 11).all(axis=2)
+    near = cv2.morphologyEx(near.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))  # (the text)
+    n, _l, st, cen = cv2.connectedComponentsWithStats(near, connectivity=8)
+    hs, ws = h / s, w / s
+    cands = []
+    for j in range(1, n):
+        x, y, bw, bh, area = st[j]
+        if (0.08 * ws < bw < 0.4 * ws and 0.03 * hs < bh < 0.15 * hs and area > 0.6 * bw * bh
+                and 0.15 * ws < cen[j][0] < 0.85 * ws and 0.45 * hs < cen[j][1] < 0.95 * hs):
+            cands.append((cen[j][0] * s, cen[j][1] * s, bw, bh))
+    # the two buttons: same size, same height on screen
+    best = None
+    for i, a_ in enumerate(cands):
+        for b_ in cands[i + 1:]:
+            if abs(a_[1] - b_[1]) < 0.02 * h and abs(a_[2] - b_[2]) < 0.2 * max(a_[2], b_[2]):
+                pair = sorted([a_, b_])
+                score = a_[2] * a_[3] + b_[2] * b_[3]
+                if best is None or score > best[0]:
+                    best = (score, pair)
+    if best is not None:
+        return [(p[0], p[1]) for p in best[1]]
+    return [(c[0], c[1]) for c in sorted(cands)]
+
+
+def find_play_again(bgr):
+    """Center (x, y) of the PLAY AGAIN button (the left one), or None."""
+    btn = find_buttons(bgr)
+    return btn[0] if len(btn) >= 1 else None
 
 
 def find_leave(bgr):
-    return find_play_again(bgr, "right")
+    """Center (x, y) of the LEAVE button (the right one), or None."""
+    btn = find_buttons(bgr)
+    return btn[1] if len(btn) >= 2 else None
 
 
 # --------------------------------------------------------------------------- pictures for debugging

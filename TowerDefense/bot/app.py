@@ -35,7 +35,17 @@ def load_settings():
             s = json.load(f)
     except (OSError, ValueError):
         s = {}
-    return {"auto_restart": bool(s.get("auto_restart", True)), "require_focus": bool(s.get("require_focus", True))}
+    return {"auto_restart": bool(s.get("auto_restart", True)), "require_focus": bool(s.get("require_focus", True)),
+            "games": parse_games(s.get("games"))}
+
+
+def parse_games(v):
+    """How many games to play: a whole number above 0, or None (blank: keep going)."""
+    try:
+        n = int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def save_settings(s):
@@ -141,6 +151,7 @@ class Bot:
                 time.sleep(0.03)
                 continue
             self.runner.auto_restart = self.settings["auto_restart"]
+            self.runner.max_games = self.settings["games"]
             try:
                 status = self.runner.step()
             except Exception as e:
@@ -166,6 +177,13 @@ class Bot:
                 self.running = False
                 io.close()
                 self.on_event("status", "Stopped (not in the game)")
+                continue
+            if status == "done":
+                self.running = False
+                io.close()
+                n = self.runner.games_done
+                self.on_event("status", f"Done ({n} games)")
+                self.on_event("log", f"Played {n} game{'s' if n != 1 else ''}, as asked. Stopped. Press * to start again.")
                 continue
             if status == "dead":
                 self.running = False
@@ -312,8 +330,16 @@ class App:
         s = self.bot.settings
         self.auto = tk.BooleanVar(value=s["auto_restart"])
         self.focus = tk.BooleanVar(value=s["require_focus"])
-        ttk.Checkbutton(wrap, text="Auto restart: click LEAVE after a game over, then press E", variable=self.auto,
+        ttk.Checkbutton(wrap, text="Auto restart: click PLAY AGAIN after a game over", variable=self.auto,
                         command=self.save).pack(anchor="w")
+        row_g = tk.Frame(wrap, bg=BG)
+        row_g.pack(anchor="w", pady=(4, 0))
+        tk.Label(row_g, text="Games to play:", bg=BG, fg=FG, font=FONT).pack(side="left")
+        self.games = tk.StringVar(value=str(s["games"] or ""))
+        tk.Entry(row_g, textvariable=self.games, width=6, bg=PANEL, fg=FG, insertbackground=FG, relief="flat",
+                 highlightbackground=LINE, highlightthickness=1, font=FONT).pack(side="left", padx=6)
+        tk.Label(row_g, text="(blank = keep going; counts from Start)", bg=BG, fg=MUTED, font=FONT).pack(side="left")
+        self.games.trace_add("write", lambda *_: self.save())
         ttk.Checkbutton(wrap, text="Only press keys while Roblox is the window in front", variable=self.focus,
                         command=self.save).pack(anchor="w", pady=(2, 8))
 
@@ -335,7 +361,8 @@ class App:
         root.after(50, self.poll)
 
     def save(self):
-        self.bot.settings.update(auto_restart=bool(self.auto.get()), require_focus=bool(self.focus.get()))
+        self.bot.settings.update(auto_restart=bool(self.auto.get()), require_focus=bool(self.focus.get()),
+                                 games=parse_games(self.games.get()))
         save_settings(self.bot.settings)
 
     def reset_learning(self):
