@@ -39,8 +39,8 @@ Turn on **Auto restart**, start a run and press `*`. It keeps playing game after
   keeps it only if those runs lasted clearly longer. Runs differ a lot, so this is slow: think ~10 tries a
   night, and a lucky streak can fool it now and then.
 - **Practice in fake games** (setting, on by default): while it plays, it also plays fast fake games in the
-  background (with the enemy and bullet speeds it measured in the real game; enemies get more HP after
-  every boss wave) and keeps tuning its settings. New settings are only taken when they beat the current
+  background (with the enemy and bullet speeds it measured in the real game; enemies get 20% more HP after
+  every boss wave, every 5 waves) and keeps tuning its settings. New settings are only taken when they beat the current
   ones on the same test games, and it switches at the next new game (`practiced.json` next to the app;
   delete it to go back). It runs at the lowest priority on all CPU cores but one, so the game and the bot
   go first, but it does keep the CPU busy (fans).

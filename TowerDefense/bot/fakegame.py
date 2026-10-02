@@ -67,8 +67,9 @@ class Obj:
 
 RADIUS = {"grunt": 30, "tiny": 24, "tank": 55, "shooter": 27, "yellow": 33, "boss": 100}
 HP = {"grunt": 3, "tiny": 1, "tank": 10, "shooter": 3, "yellow": 4, "boss": 120}
-BOSS_EVERY = 10      # a boss wave every this many waves (guess)
-HP_GROWTH = 1.5      # after each boss wave every enemy (the boss too) has this much more HP; same damage (guess)
+BOSS_EVERY = 5       # a boss wave every 5 waves (as the player says)
+HP_GROWTH = 1.2      # after each boss wave every enemy (the boss too) has this much more HP, same damage (a guess:
+                     # wave 30 = 2.5x)
 SPEED = {"grunt": 0.88, "tiny": 1.0, "tank": 0.45, "shooter": 0.6, "yellow": 0.55, "boss": 0.3}
 BULLET_SPEED = {"orange": 0.9, "yellow": 0.65, "red": 0.55}   # x your speed
 
