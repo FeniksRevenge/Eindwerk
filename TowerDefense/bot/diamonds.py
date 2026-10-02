@@ -2,7 +2,8 @@
 Finding the light-blue diamonds in the hay bales (for DiamondBot).
 
 The diamond is a flat light blue (hue ~88-97 on OpenCV's 0-180 scale, medium saturation, bright); the hay
-is yellow-brown (hue ~19). So: light-blue pixels, grouped into solid blobs at least a minimum size.
+is yellow-brown (hue ~19), so that light blue is only ever a diamond. Light-blue pieces lying close
+together are one diamond (hay straws cut a half-hidden one into slivers); together they must be big enough.
 """
 
 import cv2
@@ -11,31 +12,48 @@ import numpy as np
 HUE = (80, 108)        # light blue / cyan
 SAT_MIN = 45
 VAL_MIN = 120
-MIN_AREA = 0.00002     # of the window's area (a small, half-hidden diamond can be ~0.006%; a close one ~1%)
+MIN_AREA = 0.00002     # of the window's area, all visible pieces of one diamond together
 MAX_AREA = 0.12        # bigger than this is sky or a UI panel, not a diamond
+GROUP = 0.025          # x window height: blue pieces this close together are one (half-hidden) diamond
+MIN_PIECE = 4          # px (at the size it looks): smaller specks are ignored
 
 
 def find_diamonds(bgr, min_area=MIN_AREA):
-    """[(x, y, area_fraction)] of the diamonds in the picture, biggest first (x, y in picture pixels)."""
+    """[(x, y, area_fraction)] of the diamonds in the picture, biggest first. x, y is the middle of the
+    biggest visible piece (a diamond deep in the hay shows only a few slivers: click on one of them)."""
     h, w = bgr.shape[:2]
-    s = max(1, int(round(h / 720)))  # look at it at ~720 px high (small, half-hidden diamonds too)
+    s = max(1, int(round(h / 1400)))  # (near full size: a buried diamond shows only slivers of a few px)
     small = cv2.resize(bgr, (w // s, h // s), interpolation=cv2.INTER_AREA) if s > 1 else bgr
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-    m = ((hsv[..., 0] >= HUE[0]) & (hsv[..., 0] <= HUE[1]) & (hsv[..., 1] >= SAT_MIN) &
-         (hsv[..., 2] >= VAL_MIN)).astype(np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))   # (single specks)
-    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))  # (hay straws across a diamond)
-    n, _labels, stats, cent = cv2.connectedComponentsWithStats(m, connectivity=8)
+    m = cv2.inRange(hsv, (HUE[0], SAT_MIN, VAL_MIN), (HUE[1], 255, 255)) // 255
+    if not m.any():
+        return []
+    n, labels, stats, cent = cv2.connectedComponentsWithStats(m, connectivity=8)
+    keep = np.zeros(n, bool)
+    keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= MIN_PIECE
+    m = keep[labels].astype(np.uint8)
+    # group pieces that lie close together (hay straws across one diamond cut it into pieces); done on a
+    # 4x smaller mask (fast)
+    q = 4
+    mq = cv2.resize(m, (m.shape[1] // q + 1, m.shape[0] // q + 1), interpolation=cv2.INTER_AREA)
+    mq = cv2.dilate((mq > 0).astype(np.uint8), np.ones((3, 3), np.uint8))
+    g = max(3, int(GROUP * m.shape[0] / q))
+    groups = cv2.dilate(mq, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g)))
+    ng, glabels = cv2.connectedComponents(groups, connectivity=8)
     total = m.shape[0] * m.shape[1]
-    out = []
-    for j in range(1, n):
+    best = {}  # group -> (biggest piece area, x, y, group area)
+    for j in np.flatnonzero(keep):
         x, y, bw, bh, area = stats[j]
-        frac = area / total
-        if not (min_area <= frac <= MAX_AREA):
-            continue
-        if area < 0.25 * bw * bh or max(bw, bh) > 4 * min(bw, bh):
-            continue  # a diamond (even half hidden in the hay) is a blob, not a thin line or scattered specks
-        out.append((float(cent[j][0] * s), float(cent[j][1] * s), float(frac)))
+        gid = glabels[int(cent[j][1]) // q, int(cent[j][0]) // q] or glabels[(y + bh // 2) // q, (x + bw // 2) // q]
+        a_big, cx, cy, a_sum = best.get(gid, (0, 0.0, 0.0, 0))
+        if area > a_big:
+            a_big, cx, cy = area, cent[j][0], cent[j][1]
+        best[gid] = (a_big, cx, cy, a_sum + area)
+    out = []
+    for gid, (a_big, cx, cy, a_sum) in best.items():
+        frac = a_sum / total
+        if min_area <= frac <= MAX_AREA:
+            out.append((float(cx * s), float(cy * s), float(frac)))
     out.sort(key=lambda d: -d[2])
     return out
 

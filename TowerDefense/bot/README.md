@@ -89,7 +89,7 @@ https://github.com/FeniksRevenge/Eindwerk/releases/latest/download/DiamondBot.ex
 For the hay bales. Over and over:
 1. presses **2** (dynamite), holds the left mouse button 1.5 s, lets go;
 2. presses **5** (your tool), holds the left mouse button 15 s. When a light-blue diamond shows up in the
-   hay (also a small or half-hidden one) it moves the cursor to it, lets go of the left button, holds it
+   hay (also a small one, or one buried so deep only a few blue slivers show) it moves the cursor to it, lets go of the left button, holds it
    again and goes back. A diamond that doesn't go away after 3 tries is left alone for 10 s.
 
 The whole time the cursor slowly circles (60 px, one round per 6 s) around where you put it, so what
