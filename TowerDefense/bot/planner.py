@@ -58,7 +58,7 @@ HIT_MOB = 5e5
 class Planner:
     BULLET_MARGIN = 0.8   # x R of room to keep from bullets
     NEAR_BULLET = 400.0
-    NEAR_ADD = 1.0        # 1: every nearby bullet/enemy adds to the cost; 0: only the closest one at each moment
+    NEAR_ADD = 0.0        # 1: every nearby bullet/enemy adds to the cost; 0: only the closest one at each moment
                           # counts (a middle full of slow bullets then doesn't look worse than a wall)
     NEAR_MOB = 600.0
     CROWD_WEIGHT = 40.0
